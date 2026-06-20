@@ -1,7 +1,35 @@
 import json
+import re
 from astrbot.api.event import filter
 from astrbot.api.all import Star, Context, AstrBotConfig, logger
 from astrbot.core.platform.sources.aiocqhttp.aiocqhttp_message_event import AiocqhttpMessageEvent
+
+
+def _simplify_cq_codes(raw_message: str) -> str:
+    """Simplify CQ codes: keep only key params per type, drop url/file_size etc."""
+
+    def _replace(match: re.Match) -> str:
+        cq_type = match.group(1)
+        params_str = match.group(2) or ""
+
+        params = {}
+        if params_str.startswith(","):
+            params_str = params_str[1:]
+        for part in params_str.split(","):
+            if "=" in part:
+                k, v = part.split("=", 1)
+                params[k] = v
+
+        if cq_type == "image":
+            return f"[CQ:image,file={params['file']}]" if "file" in params else "[CQ:image]"
+        elif cq_type == "reply":
+            return f"[CQ:reply,id={params['id']}]" if "id" in params else "[CQ:reply]"
+        elif params:
+            first_key = next(iter(params))
+            return f"[CQ:{cq_type},{first_key}={params[first_key]}]"
+        return f"[CQ:{cq_type}]"
+
+    return re.sub(r"\[CQ:(\w+)([^\]]*?)\]", _replace, raw_message)
 
 class OneBotToolkit(Star):
 
@@ -232,3 +260,50 @@ class OneBotToolkit(Star):
                 "group_id": group_id,
                 "user_id": user_id
             }, ensure_ascii=False, indent=4)
+
+    @filter.llm_tool(name="get_group_msg_history")
+    async def get_group_msg_history(
+            self,
+            event: AiocqhttpMessageEvent,
+            count: int = 20,
+            message_id: int = 0
+    ) -> str:
+        """获取当前群聊近 n 条消息记录，格式化为易读的对话记录。仅在群聊场景下可用。
+
+        Args:
+            count(number): 可选。获取消息的最大条数，默认 20。
+            message_id(number): 可选。起始消息 ID，从此消息往前查。默认 0 表示从最新消息开始。
+        """
+        if not isinstance(event, AiocqhttpMessageEvent):
+            return "⚠️ 当前平台非 OneBot，不可用"
+
+        raw = event.message_obj.raw_message
+        group_id = raw.get("group_id")
+        if not group_id:
+            return "⚠️ 当前非群聊场景，无法获取群消息记录"
+
+        count = max(1, min(int(count), 100))
+
+        try:
+            params = {"group_id": group_id, "count": count}
+            if message_id:
+                params["message_id"] = message_id
+            result = await event.bot.call_action("get_group_msg_history", **params)
+        except Exception as e:
+            return f"❌ 获取群消息记录失败: {str(e)}"
+
+        messages = result.get("messages", []) if isinstance(result, dict) else []
+
+        if not messages:
+            return "ℹ️ 没有获取到消息记录"
+
+        lines = []
+        for msg in messages:
+            nickname = msg.get("sender", {}).get("nickname", "未知")
+            card = msg.get("sender", {}).get("card", "")
+            display_name = card or nickname
+            raw_msg = msg.get("raw_message", "")
+            simplified = _simplify_cq_codes(raw_msg)
+            lines.append(f"{display_name}：{simplified}")
+
+        return "\n".join(lines)
