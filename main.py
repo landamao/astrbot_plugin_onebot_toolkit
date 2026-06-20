@@ -8,7 +8,7 @@ class OneBotToolkit(Star):
     def __init__(self, context: Context, config: AstrBotConfig):
         super().__init__(context)
 
-        禁用的动作 = config.get('禁用的动作', [])  # 避免 KeyError
+        禁用的动作 = config.get('非管理员禁用的动作', [])  # 与 _conf_schema.json 的 key 一致
 
         动作映射 = {
             "发送私聊消息": "send_private_msg",
@@ -75,7 +75,7 @@ class OneBotToolkit(Star):
             return "⚠️ 管理员设置了权限，当前用户无权限"
         if not isinstance(action, str):
             return "❌️ action参数的类型不正确"
-        if action in self.禁用的动作:
+        if not event.is_admin() and action in self.禁用的动作:
             return "⚠️ 管理员已禁用该动作请求"
         if limit is not None:
             try:
