@@ -90,7 +90,7 @@ data/plugins/onebot_toolkit/
 - **参数**：
   - `action` (string)：Action 名称，如 `get_friend_list`、`send_group_msg`
   - `params` (object)：该 Action 的参数对象，无参数时传 `{}`
-  - `limit` (number, 可选)：如果结果是列表，设置返回的最大数量，防止内容过多
+  - `limit` (number, 可选)：如果结果是列表，设置返回的最大数量，防止内容过多。默认 20，传 -1 表示无限制
 - **返回**：JSON 格式响应（缩进 4 空格，保留中文）
 - **白名单过滤**：非管理员只能调用允许列表中的 Action，OneBot 新增的未列出动作默认拒绝；管理员不受限制
 

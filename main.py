@@ -58,14 +58,14 @@ class OneBotToolkit(Star):
         self.仅管理员可用 = not bool(config.get('允许非管理员', False))
 
     @filter.llm_tool(name="call_onebot_action")
-    async def call_action(self, event: AiocqhttpMessageEvent, action: str, params: dict, limit: int = None) -> str:
+    async def call_action(self, event: AiocqhttpMessageEvent, action: str, params: dict, limit: int = 20) -> str:
         """
         调用 OneBot 协议（NapCat）的任意 Action API，获取 QQ 平台数据。
 
         Args:
             action (string): 要调用的 OneBot Action 名称，例如 "get_friend_list"、"send_group_msg" 等。
             params (object): 该 Action 所需的参数对象，键为参数名，值为对应值。若无参数可不填或传空对象 {}。
-            limit(number): 可选，如果结果是列表，设置返回的最大数量，防止内容过多
+            limit(number): 可选，如果结果是列表，设置返回的最大数量，防止内容过多。默认 20，传 -1 表示无限制。
         Returns:
             string: 返回该 Action 的 JSON 格式响应结果（格式化缩进 4 空格）
         """
@@ -86,27 +86,17 @@ class OneBotToolkit(Star):
         try:
             result = await event.bot.call_action(action, **params)
 
-            # 处理长度限制：兼容三种常见结果形态
-            if limit is not None:
-                max_len = int(limit)
+            # 处理长度限制：兼容三种常见结果形态（-1 表示无限制）
+            if limit is not None and limit != -1:
                 # 1. 结果本身直接是列表
                 if isinstance(result, list):
-                    truncated = result[:max_len]
-                    return json.dumps(truncated, ensure_ascii=False, indent=4)
+                    return json.dumps(result[:limit], ensure_ascii=False, indent=4)
                 # 2. 标准 OneBot 响应：{status, retcode, data}
-                elif isinstance(result, dict) and 'data' in result:
-                    if isinstance(result['data'], list):
-                        truncated = result.copy()
-                        truncated['data'] = truncated['data'][:max_len]
-                        return json.dumps(truncated, ensure_ascii=False, indent=4)
-                    else:
-                        # data 不是列表，忽略 limit
-                        return json.dumps(result, ensure_ascii=False, indent=4)
-                # 3. 其他无法识别列表的结构，忽略 limit
-                else:
-                    return json.dumps(result, ensure_ascii=False, indent=4)
-            else:
-                return json.dumps(result, ensure_ascii=False, indent=4)
+                elif isinstance(result, dict) and 'data' in result and isinstance(result['data'], list):
+                    truncated = result.copy()
+                    truncated['data'] = truncated['data'][:limit]
+                    return json.dumps(truncated, ensure_ascii=False, indent=4)
+            return json.dumps(result, ensure_ascii=False, indent=4)
 
         except Exception as e:
             return json.dumps({
