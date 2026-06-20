@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.1.0
+
+- 新增 `get_group_member_list`：获取当前群成员列表，可选返回数量上限（最大 20）
+- 新增 `get_group_member_info`：获取当前群内指定用户信息
+
 ## v1.0.0
 
 - 初始版本

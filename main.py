@@ -92,3 +92,74 @@ class OneBotToolkit(Star):
         except Exception as e:
             # 失败时始终返回错误信息，确保大模型知情
             return f"❌ 消息发送失败，错误信息：{str(e)}"
+
+    @filter.llm_tool(name="get_group_member_list")
+    async def get_group_member_list(
+            self,
+            event: AiocqhttpMessageEvent,
+            limit: int = 20
+    ) -> str:
+        """获取当前群的成员列表。仅在群聊场景下可用。
+
+        Args:
+            limit(integer): 可选。返回成员的数量上限，最大 20，默认 20。
+        """
+        if not isinstance(event, AiocqhttpMessageEvent):
+            return "⚠️ 当前平台非 OneBot，不可用"
+
+        raw = event.message_obj.raw_message
+        group_id = raw.get("group_id")
+        if not group_id:
+            return "⚠️ 当前非群聊场景，无法获取群成员列表"
+
+        limit = max(1, min(limit, 20))
+
+        try:
+            result = await event.bot.call_action("get_group_member_list", group_id=group_id)
+            members = result[:limit] if isinstance(result, list) else result
+            summary = {
+                "group_id": group_id,
+                "total": len(result) if isinstance(result, list) else None,
+                "returned": len(members) if isinstance(members, list) else None,
+                "members": members
+            }
+            return json.dumps(summary, ensure_ascii=False, indent=4)
+        except Exception as e:
+            return json.dumps({
+                "error": f"获取群成员列表失败: {str(e)}",
+                "group_id": group_id
+            }, ensure_ascii=False, indent=4)
+
+    @filter.llm_tool(name="get_group_member_info")
+    async def get_group_member_info(
+            self,
+            event: AiocqhttpMessageEvent,
+            user_id: int
+    ) -> str:
+        """获取当前群内指定用户的信息。
+
+        Args:
+            user_id(integer): 目标用户的 QQ 号。
+        """
+        if not isinstance(event, AiocqhttpMessageEvent):
+            return "⚠️ 当前平台非 OneBot，不可用"
+
+        raw = event.message_obj.raw_message
+        group_id = raw.get("group_id")
+        if not group_id:
+            return "⚠️ 当前非群聊场景，无法获取群成员信息"
+
+        try:
+            result = await event.bot.call_action(
+                "get_group_member_info",
+                group_id=group_id,
+                user_id=user_id,
+                no_cache=False
+            )
+            return json.dumps(result, ensure_ascii=False, indent=4)
+        except Exception as e:
+            return json.dumps({
+                "error": f"获取群成员信息失败: {str(e)}",
+                "group_id": group_id,
+                "user_id": user_id
+            }, ensure_ascii=False, indent=4)

@@ -11,6 +11,8 @@
 | `call_onebot_action` | 调用任意 OneBot Action API，获取 QQ 平台数据（仅管理员可用） |
 | `get_raw_message` | 获取当前消息的原始 JSON 数据结构 |
 | `send_onebot_msg` | 通过 OneBot API 发送组合/复杂消息（CQ 码字符串或消息段数组） |
+| `get_group_member_list` | 获取当前群成员列表，可选返回数量上限（最大 20） |
+| `get_group_member_info` | 获取当前群内指定用户的信息 |
 
 ## 安装
 
@@ -50,6 +52,22 @@ data/plugins/onebot_toolkit/
   - `message_array` (array, 可选)：OneBot 消息段数组，如 `[{"type":"face","data":{"id":"272"}}]`
   - `receive_result` (boolean, 可选)：是否接收发送反馈，默认 `false`（发送后静默结束）
 - **说明**：纯文本消息请直接返回，不要使用此工具。视频和文件只能单独发送。
+
+### get_group_member_list
+
+获取当前群的成员列表，仅在群聊场景下可用。
+
+- **参数**：
+  - `limit` (integer, 可选)：返回成员数量上限，最大 20，默认 20
+- **返回**：JSON 格式，包含 `group_id`、`total`（群总人数）、`returned`（实际返回数）、`members`（成员列表）
+
+### get_group_member_info
+
+获取当前群内指定用户的信息，仅在群聊场景下可用。
+
+- **参数**：
+  - `user_id` (integer)：目标用户的 QQ 号
+- **返回**：JSON 格式，包含该用户在群内的昵称、角色、入群时间等信息
 
 ## 环境要求
 
