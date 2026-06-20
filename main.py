@@ -54,7 +54,8 @@ class OneBotToolkit(Star):
             if k in 动作映射:
                 self.允许的列表.discard(动作映射[k])
             else:
-                logger.warning(f"配置中的禁用动作「{k}」不是有效动作，已忽略")
+                self.允许的列表.discard(k)
+                logger.warning(f"配置中的禁用动作「{k}」不是有效动作，已移除")
         self.仅管理员可用 = not bool(config.get('允许非管理员', False))
 
     @filter.llm_tool(name="call_onebot_action")
