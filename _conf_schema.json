@@ -7,7 +7,7 @@
     },
     "非管理员禁用的动作": {
         "description": "非管理员禁用的动作列表",
-        "hint": "非管理员时，llm工具call_onebot_action调用任意OneBot Action API时，禁止的动作列表，管理员无限制",
+        "hint": "非管理员时，llm工具call_onebot_action调用OneBot Action API时，禁用的动作列表（白名单模式：未禁用的动作才允许，OneBot新增的未列出动作默认拒绝）。管理员不受限制",
         "type": "list",
         "options":  [
             "发送私聊消息",

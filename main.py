@@ -49,12 +49,12 @@ class OneBotToolkit(Star):
             "清理缓存": "clean_cache"
         }
 
-        self.禁用的动作 = set()
+        self.允许的列表 = set(动作映射.values())
         for k in 禁用的动作:
             if k in 动作映射:
-                self.禁用的动作.add(动作映射[k])
+                self.允许的列表.discard(动作映射[k])
             else:
-                logger.warning(f"配置中的禁用动作“{k}”不是有效动作，已忽略")
+                logger.warning(f"配置中的禁用动作「{k}」不是有效动作，已忽略")
         self.仅管理员可用 = not bool(config.get('允许非管理员', False))
 
     @filter.llm_tool(name="call_onebot_action")
@@ -75,8 +75,8 @@ class OneBotToolkit(Star):
             return "⚠️ 管理员设置了权限，当前用户无权限"
         if not isinstance(action, str):
             return "❌️ action参数的类型不正确"
-        if not event.is_admin() and action in self.禁用的动作:
-            return "⚠️ 管理员已禁用该动作请求"
+        if not event.is_admin() and action not in self.允许的列表:
+            return "⚠️ 管理员未允许该动作请求"
         if limit is not None:
             try:
                 limit = int(limit)
