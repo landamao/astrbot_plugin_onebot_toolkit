@@ -1,39 +1,118 @@
 import json
 from astrbot.api.event import filter
-from astrbot.api.all import Star
+from astrbot.api.all import Star, Context, AstrBotConfig, logger
 from astrbot.core.platform.sources.aiocqhttp.aiocqhttp_message_event import AiocqhttpMessageEvent
 
 class OneBotToolkit(Star):
 
+    def __init__(self, context: Context, config: AstrBotConfig):
+        super().__init__(context)
+
+        禁用的动作 = config.get('禁用的动作', [])  # 避免 KeyError
+
+        动作映射 = {
+            "发送私聊消息": "send_private_msg",
+            "发送群消息": "send_group_msg",
+            "发送消息": "send_msg",
+            "撤回消息": "delete_msg",
+            "获取消息": "get_msg",
+            "获取合并转发消息": "get_forward_msg",
+            "发送好友赞": "send_like",
+            "群组踢人": "set_group_kick",
+            "群组单人禁言": "set_group_ban",
+            "群组全员禁言": "set_group_whole_ban",
+            "设置群管理员": "set_group_admin",
+            "设置群名片": "set_group_card",
+            "设置群名称": "set_group_name",
+            "退出群组": "set_group_leave",
+            "设置群专属头衔": "set_group_special_title",
+            "处理加好友请求": "set_friend_add_request",
+            "处理加群请求/邀请": "set_group_add_request",
+            "获取登录号信息": "get_login_info",
+            "获取陌生人信息": "get_stranger_info",
+            "获取好友列表": "get_friend_list",
+            "获取群信息": "get_group_info",
+            "获取群列表": "get_group_list",
+            "获取群成员信息": "get_group_member_info",
+            "获取群成员列表": "get_group_member_list",
+            "获取群荣誉信息": "get_group_honor_info",
+            "获取Cookies": "get_cookies",
+            "获取CSRF Token": "get_csrf_token",
+            "获取QQ相关凭证": "get_credentials",
+            "获取语音": "get_record",
+            "获取图片": "get_image",
+            "检查是否可以发送图片": "can_send_image",
+            "检查是否可以发送语音": "can_send_record",
+            "获取插件运行状态": "get_status",
+            "获取版本信息": "get_version_info",
+            "重启OneBot": "set_restart",
+            "清理缓存": "clean_cache"
+        }
+
+        self.禁用的动作 = set()
+        for k in 禁用的动作:
+            if k in 动作映射:
+                self.禁用的动作.add(动作映射[k])
+            else:
+                logger.warning(f"配置中的禁用动作“{k}”不是有效动作，已忽略")
+        self.仅管理员可用 = not bool(config.get('允许非管理员', False))
+
     @filter.llm_tool(name="call_onebot_action")
-    async def call_action(self, event: AiocqhttpMessageEvent, action: str, params: dict) -> str:
+    async def call_action(self, event: AiocqhttpMessageEvent, action: str, params: dict, limit: int = None) -> str:
         """
         调用 OneBot 协议（NapCat）的任意 Action API，获取 QQ 平台数据。
 
         Args:
             action (string): 要调用的 OneBot Action 名称，例如 "get_friend_list"、"send_group_msg" 等。
-            params (object): 该 Action 所需的参数对象，键为参数名，值为对应值。若无参数可传空对象 {}。
-
+            params (object): 该 Action 所需的参数对象，键为参数名，值为对应值。若无参数可不填或传空对象 {}。
+            limit(number): 可选，如果结果是列表，设置返回的最大数量，防止内容过多
         Returns:
-            string: 返回该 Action 的 JSON 格式响应结果（格式化缩进 4 空格），便于后续 LLM 解析。
+            string: 返回该 Action 的 JSON 格式响应结果（格式化缩进 4 空格）
         """
-        # 平台与权限校验（保留原逻辑）
         if not isinstance(event, AiocqhttpMessageEvent):
             return "⚠️ 当前平台非 OneBot，不可用"
-        if not event.is_admin():
-            return "⚠️ 仅可协助机器人管理员使用此工具，该发送者非机器人管理员"
+        if not event.is_admin() and self.仅管理员可用:
+            return "⚠️ 管理员设置了权限，当前用户无权限"
+        if not isinstance(action, str):
+            return "❌️ action参数的类型不正确"
+        if action in self.禁用的动作:
+            return "⚠️ 管理员已禁用该动作请求"
+        if limit is not None:
+            try:
+                limit = int(limit)
+            except (ValueError, TypeError):
+                return "❌️ limit 参数的类型不正确"
 
         try:
-            # 调用底层 OneBot Action
             result = await event.bot.call_action(action, **params)
-            # 返回 JSON 字符串（中文保留，格式化缩进）
-            return json.dumps(result, ensure_ascii=False, indent=4)
+
+            # 处理长度限制：兼容三种常见结果形态
+            if limit is not None:
+                max_len = int(limit)
+                # 1. 结果本身直接是列表
+                if isinstance(result, list):
+                    truncated = result[:max_len]
+                    return json.dumps(truncated, ensure_ascii=False, indent=4)
+                # 2. 标准 OneBot 响应：{status, retcode, data}
+                elif isinstance(result, dict) and 'data' in result:
+                    if isinstance(result['data'], list):
+                        truncated = result.copy()
+                        truncated['data'] = truncated['data'][:max_len]
+                        return json.dumps(truncated, ensure_ascii=False, indent=4)
+                    else:
+                        # data 不是列表，忽略 limit
+                        return json.dumps(result, ensure_ascii=False, indent=4)
+                # 3. 其他无法识别列表的结构，忽略 limit
+                else:
+                    return json.dumps(result, ensure_ascii=False, indent=4)
+            else:
+                return json.dumps(result, ensure_ascii=False, indent=4)
+
         except Exception as e:
-            # 异常时返回错误信息，LLM 也能理解
             return json.dumps({
                 "error": f"调用 Action 失败: {str(e)}",
                 "action": action,
-                "params": params
+                "params": params or {}
             }, ensure_ascii=False, indent=4)
 
     @filter.llm_tool(name="get_raw_message")

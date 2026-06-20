@@ -1,6 +1,6 @@
 name: OneBot协议工具箱
 display_name: OneBot协议工具箱
 desc: 为 LLM 暴露 OneBot 协议原生能力：调用任意 Action API、获取原始消息、发送复杂消息
-version: v1.1.0
+version: v1.2.0
 author: 懒大猫
 repo: https://github.com/landamao/astrbot_plugin_onebot_toolkit
