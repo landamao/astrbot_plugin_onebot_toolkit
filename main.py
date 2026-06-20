@@ -102,7 +102,7 @@ class OneBotToolkit(Star):
         """获取当前群的成员列表。仅在群聊场景下可用。
 
         Args:
-            limit(integer): 可选。返回成员的数量上限，最大 20，默认 20。
+            limit(number): 可选。返回成员的数量上限，最大 20，默认 20。
         """
         if not isinstance(event, AiocqhttpMessageEvent):
             return "⚠️ 当前平台非 OneBot，不可用"
@@ -139,7 +139,7 @@ class OneBotToolkit(Star):
         """获取当前群内指定用户的信息。
 
         Args:
-            user_id(integer): 目标用户的 QQ 号。
+            user_id(number): 目标用户的 QQ 号。
         """
         if not isinstance(event, AiocqhttpMessageEvent):
             return "⚠️ 当前平台非 OneBot，不可用"
