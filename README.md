@@ -1,6 +1,6 @@
 # OneBot 协议工具箱
 
-为 LLM 暴露 OneBot（NapCat）原生能力的 AstrBot 插件。无需 `__init__.py`，安装即用。
+为 LLM 暴露 OneBot（NapCat）原生能力的 AstrBot 插件。插件类无需 `__init__` 构造函数，安装即用。
 
 ## 功能
 
