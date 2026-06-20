@@ -266,13 +266,15 @@ class OneBotToolkit(Star):
             self,
             event: AiocqhttpMessageEvent,
             count: int = 20,
-            message_id: int = 0
+            message_id: int = 0,
+            max_length: int = 50
     ) -> str:
         """获取当前群聊近 n 条消息记录，格式化为易读的对话记录。仅在群聊场景下可用。
 
         Args:
             count(number): 可选。获取消息的最大条数，默认 20。
             message_id(number): 可选。起始消息 ID，从此消息往前查。默认 0 表示从最新消息开始。
+            max_length(number): 可选。每条消息内容的最大字符数，超出截断并用省略号表示。默认 50，传 -1 表示不截断。建议保持默认值以防止单条消息过长导致输出臃肿。
         """
         if not isinstance(event, AiocqhttpMessageEvent):
             return "⚠️ 当前平台非 OneBot，不可用"
@@ -283,6 +285,7 @@ class OneBotToolkit(Star):
             return "⚠️ 当前非群聊场景，无法获取群消息记录"
 
         count = max(1, min(int(count), 100))
+        max_length = int(max_length) if max_length is not None else 50
 
         try:
             params = {"group_id": group_id, "count": count}
@@ -304,6 +307,8 @@ class OneBotToolkit(Star):
             display_name = card or nickname
             raw_msg = msg.get("raw_message", "")
             simplified = _simplify_cq_codes(raw_msg)
+            if max_length != -1 and len(simplified) > max_length:
+                simplified = simplified[:max_length] + "…"
             lines.append(f"{display_name}：{simplified}")
 
         return "\n".join(lines)

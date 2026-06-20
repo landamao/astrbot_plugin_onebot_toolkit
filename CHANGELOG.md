@@ -1,5 +1,9 @@
 # Changelog
 
+## v1.5.1
+
+- `get_group_msg_history` 新增 `max_length` 参数：每条消息最大字符数，默认 50，超出截断用省略号，传 -1 不截断
+
 ## v1.5.0
 
 - 新增 `get_group_msg_history`：获取当前群聊近 n 条消息记录，格式化为易读的对话记录（默认 20 条，上限 100）
