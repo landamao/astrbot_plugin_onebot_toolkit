@@ -267,7 +267,8 @@ class OneBotToolkit(Star):
             event: AiocqhttpMessageEvent,
             count: int = 20,
             message_id: int = 0,
-            max_length: int = 50
+            max_length: int = 50,
+            show_message_id: bool = False
     ) -> str:
         """获取当前群聊近 n 条消息记录，格式化为易读的对话记录。仅在群聊场景下可用。
 
@@ -275,6 +276,7 @@ class OneBotToolkit(Star):
             count(number): 可选。获取消息的最大条数，默认 20。
             message_id(number): 可选。起始消息 ID，从此消息往前查。默认 0 表示从最新消息开始。
             max_length(number): 可选。每条消息内容的最大字符数，超出截断并用省略号表示。默认 50，传 -1 表示不截断。建议保持默认值以防止单条消息过长导致输出臃肿。
+            show_message_id(boolean): 可选。是否在每条消息前显示其 message_id。默认 false。
         """
         if not isinstance(event, AiocqhttpMessageEvent):
             return "⚠️ 当前平台非 OneBot，不可用"
@@ -309,6 +311,42 @@ class OneBotToolkit(Star):
             simplified = _simplify_cq_codes(raw_msg)
             if max_length != -1 and len(simplified) > max_length:
                 simplified = simplified[:max_length] + "…"
-            lines.append(f"{display_name}：{simplified}")
+            if show_message_id:
+                lines.append(f"message_id={msg['message_id']};{display_name}：{simplified}")
+            else:
+                lines.append(f"{display_name}：{simplified}")
 
         return "\n".join(lines)
+
+    @filter.llm_tool(name="batch_delete_msg")
+    async def batch_delete_msg(
+            self,
+            event: AiocqhttpMessageEvent,
+            message_ids: list[str]
+    ) -> str:
+        """批量撤回消息。传入多个 message_id，逐条撤回并返回每条的结果。适用于群聊和私聊。
+
+        Args:
+            message_ids(array[string]): 要撤回的消息 ID 列表，例如 ["123456", "789012"]。
+        """
+        if not isinstance(event, AiocqhttpMessageEvent):
+            return "⚠️ 当前平台非 OneBot，不可用"
+        if not event.is_admin() and self.仅管理员可用:
+            return "⚠️ 管理员设置了权限，当前用户无权限"
+        if not event.is_admin() and "delete_msg" not in self.允许的列表:
+            return "⚠️ 管理员未允许该动作请求"
+        if not isinstance(message_ids, list) or not message_ids:
+            return "❌ message_ids 必须是非空数组"
+
+        results = []
+        success = 0
+        for mid in message_ids:
+            try:
+                await event.bot.call_action("delete_msg", message_id=int(mid))
+                results.append(f"✅ message_id={mid} 撤回成功")
+                success += 1
+            except Exception as e:
+                results.append(f"❌ message_id={mid} 撤回失败: {str(e)}")
+
+        summary = f"批量撤回完成：成功 {success}/{len(message_ids)} 条\n" + "\n".join(results)
+        return summary

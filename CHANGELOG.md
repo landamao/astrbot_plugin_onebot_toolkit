@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.6.0
+
+- 新增 `batch_delete_msg`：批量撤回消息，传入 message_id 列表逐条撤回并返回结果
+- `get_group_msg_history` 新增 `show_message_id` 参数：在每条消息前显示 message_id
+
 ## v1.5.1
 
 - `get_group_msg_history` 新增 `max_length` 参数：每条消息最大字符数，默认 50，超出截断用省略号，传 -1 不截断
