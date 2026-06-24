@@ -1,5 +1,9 @@
 # Changelog
 
+## v1.10.3
+
+- `batch_delete_msg` 返回结果精简：成功仅提示数量，失败仅显示消息 ID
+
 ## v1.10.2
 
 - `_conf_schema.json`：非管理员允许的动作列表增加风险提示

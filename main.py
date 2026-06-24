@@ -384,7 +384,7 @@ class OneBotToolkit(Star):
             event: AiocqhttpMessageEvent,
             message_ids: list[str]
     ) -> str:
-        """批量撤回消息。传入多个 message_id，逐条撤回并返回每条的结果。适用于群聊和私聊。
+        """批量撤回消息。传入多个 message_id，逐条撤回。适用于群聊和私聊。
 
         Args:
             message_ids(array[string]): 要撤回的消息 ID 列表，例如 ["123456", "789012"]。
@@ -395,23 +395,24 @@ class OneBotToolkit(Star):
         if not isinstance(message_ids, list) or not message_ids:
             return "❌ message_ids 必须是非空数组"
 
-        results = []
+        failed = []
         success = 0
         for mid in message_ids:
             try:
                 mid_int = int(mid)
             except (ValueError, TypeError):
-                results.append(f"❌ message_id={mid} 无效：必须是数字")
+                failed.append(str(mid))
                 continue
             try:
                 await event.bot.call_action("delete_msg", message_id=mid_int)
-                results.append(f"✅ message_id={mid} 撤回成功")
                 success += 1
-            except Exception as e:
-                results.append(f"❌ message_id={mid} 撤回失败: {str(e)}")
+            except Exception:
+                failed.append(str(mid))
 
-        summary = f"批量撤回完成：成功 {success}/{len(message_ids)} 条\n" + "\n".join(results)
-        return summary
+        parts = [f"撤回成功 {success}/{len(message_ids)} 条"]
+        if failed:
+            parts.append(f"撤回失败：{', '.join(failed)}")
+        return "\n".join(parts)
 
     @filter.llm_tool(name="get_user_recent_msgs")
     async def get_user_recent_msgs(
