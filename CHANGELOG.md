@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.7.0
+
+- 新增 `get_user_recent_msgs`：获取群内指定用户最近 n 分钟内的发言记录，支持设置最大返回条数和每条消息最大字数
+- 使用 `reverseOrder: True` + `message_seq` 分页，兼容 NapCat 的消息历史 API
+
 ## v1.6.0
 
 - 新增 `batch_delete_msg`：批量撤回消息，传入 message_id 列表逐条撤回并返回结果

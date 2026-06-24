@@ -1,5 +1,6 @@
 import json
 import re
+import time as _time
 from astrbot.api.event import filter
 from astrbot.api.all import Star, Context, AstrBotConfig, logger
 from astrbot.core.platform.sources.aiocqhttp.aiocqhttp_message_event import AiocqhttpMessageEvent
@@ -350,3 +351,111 @@ class OneBotToolkit(Star):
 
         summary = f"批量撤回完成：成功 {success}/{len(message_ids)} 条\n" + "\n".join(results)
         return summary
+
+    @filter.llm_tool(name="get_user_recent_msgs")
+    async def get_user_recent_msgs(
+            self,
+            event: AiocqhttpMessageEvent,
+            user_id: int,
+            minutes: int = 10,
+            max_count: int = 20,
+            max_length: int = 100
+    ) -> str:
+        """获取当前群内指定用户最近 n 分钟内的发言记录。仅在群聊场景下可用。
+
+        Args:
+            user_id(number): 目标用户的 QQ 号。
+            minutes(number): 可选。回溯的时间范围（分钟），默认 10。
+            max_count(number): 可选。返回消息的最大条数，默认 20，上限 100。
+            max_length(number): 可选。每条消息内容的最大字符数，超出截断用省略号表示。默认 100，传 -1 表示不截断。
+        """
+        if not isinstance(event, AiocqhttpMessageEvent):
+            return "⚠️ 当前平台非 OneBot，不可用"
+
+        raw = event.message_obj.raw_message
+        group_id = raw.get("group_id")
+        if not group_id:
+            return "⚠️ 当前非群聊场景，无法获取群消息记录"
+
+        minutes = max(1, min(int(minutes), 1440))
+        max_count = max(1, min(int(max_count), 100))
+        max_length = int(max_length) if max_length is not None else 100
+
+        cutoff = int(_time.time()) - minutes * 60
+        collected = {}  # 用 dict 去重，key=message_id
+        current_anchor = None
+
+        for _ in range(10):
+            params = {"group_id": group_id, "count": 100, "reverseOrder": True}
+            if current_anchor is not None:
+                params["message_seq"] = current_anchor
+
+            try:
+                result = await event.bot.call_action("get_group_msg_history", **params)
+            except Exception as e:
+                if not collected:
+                    return f"❌ 获取群消息记录失败: {str(e)}"
+                break
+
+            messages = result.get("messages", []) if isinstance(result, dict) else []
+            if not messages:
+                break
+
+            # 动态检测顺序：比较首尾时间戳
+            first_time = messages[0].get("time", 0)
+            last_time = messages[-1].get("time", 0)
+            if first_time > last_time:
+                # 逆序：最新在前
+                chunk_earliest = messages[-1]
+            else:
+                # 正序：最旧在前
+                chunk_earliest = messages[0]
+
+            chunk_earliest_time = chunk_earliest.get("time", 0)
+
+            for msg in messages:
+                msg_time = msg.get("time", 0)
+                if msg_time < cutoff:
+                    continue
+
+                sender_id = msg.get("sender", {}).get("user_id") or msg.get("user_id")
+                if str(sender_id) != str(user_id):
+                    continue
+
+                msg_id = msg.get("message_id")
+                if msg_id in collected:
+                    continue
+
+                raw_msg = msg.get("raw_message", "")
+                simplified = _simplify_cq_codes(raw_msg)
+                if max_length != -1 and len(simplified) > max_length:
+                    simplified = simplified[:max_length] + "…"
+                collected[msg_id] = {
+                    "message_id": msg_id,
+                    "time": msg_time,
+                    "content": simplified
+                }
+
+            # 已到达时间边界，停止回溯
+            if chunk_earliest_time < cutoff:
+                break
+
+            # 提取锚点：message_seq > real_id > seq > message_id
+            new_anchor = (
+                chunk_earliest.get("message_seq")
+                or chunk_earliest.get("real_id")
+                or chunk_earliest.get("seq")
+                or chunk_earliest.get("message_id")
+            )
+            if new_anchor is None or (current_anchor is not None and str(new_anchor) == str(current_anchor)):
+                break
+            current_anchor = new_anchor
+
+        items = sorted(collected.values(), key=lambda x: x["time"], reverse=True)[:max_count]
+
+        if not items:
+            return f"ℹ️ 该用户在最近 {minutes} 分钟内没有发言记录"
+
+        lines = [f"[{it['message_id']}] {it['content']}" for it in items]
+        header = f"用户 {user_id} 最近 {minutes} 分钟内的发言（共 {len(items)} 条）：\n"
+        return header + "\n".join(lines)
