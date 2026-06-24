@@ -37,8 +37,6 @@ class OneBotToolkit(Star):
     def __init__(self, context: Context, config: AstrBotConfig):
         super().__init__(context)
 
-        禁用的动作 = config.get('非管理员禁用的动作', [])  # 与 _conf_schema.json 的 key 一致
-
         self._动作映射 = {
             "发送私聊消息": "send_private_msg",
             "发送群消息": "send_group_msg",
@@ -78,22 +76,25 @@ class OneBotToolkit(Star):
             "清理缓存": "clean_cache"
         }
 
-        self._允许的列表 = set(self._动作映射.values())
-        for k in 禁用的动作:
+        允许的动作 = config.get('非管理员允许的动作', [])  # 与 _conf_schema.json 的 key 一致
+
+        self._允许的列表 = set()
+        for k in 允许的动作:
             if k in self._动作映射:
-                self._允许的列表.discard(self._动作映射[k])
+                self._允许的列表.add(self._动作映射[k])
             else:
-                logger.warning(f"配置中的禁用动作「{k}」不是有效动作，已忽略")
+                logger.warning(f"配置中的允许动作「{k}」不是有效动作，已忽略")
         self._仅管理员可用 = not bool(config.get('允许非管理员', False))
 
     def _check_permission(self, event: AiocqhttpMessageEvent, action: str = None) -> str | None:
-        """校验平台、管理员权限和白名单。通过返回 None，失败返回错误消息。"""
+        """校验平台和权限。通过返回 None，失败返回错误消息。"""
         if not isinstance(event, AiocqhttpMessageEvent):
             return "⚠️ 当前平台非 OneBot，不可用"
-        if not event.is_admin() and self._仅管理员可用:
-            return "⚠️ 管理员设置了权限，当前用户无权限"
-        if action is not None and not event.is_admin() and action not in self._允许的列表:
-            return "⚠️ 管理员未允许该动作请求"
+        if action is not None:
+            if not event.is_admin() and self._仅管理员可用:
+                return "⚠️ 管理员设置了权限，当前用户无权限"
+            if not event.is_admin() and action not in self._允许的列表:
+                return "⚠️ 管理员未允许该动作请求"
         return None
 
     def _format_message_line(self, msg: dict, max_length: int = 50, show_id: bool = False) -> str:
@@ -106,7 +107,7 @@ class OneBotToolkit(Star):
         if max_length != -1 and len(simplified) > max_length:
             simplified = simplified[:max_length] + "…"
         if show_id:
-            return f"message_id={msg.get('message_id')};{display_name}：{simplified}"
+            return f"msg_id={msg.get('message_id')};{display_name}：{simplified}"
         return f"{display_name}：{simplified}"
 
     @staticmethod
@@ -117,14 +118,12 @@ class OneBotToolkit(Star):
     @filter.llm_tool(name="call_onebot_action")
     async def call_action(self, event: AiocqhttpMessageEvent, action: str, params: dict, limit: int = None) -> str:
         """
-        调用 OneBot 协议（NapCat）的任意 Action API，获取 QQ 平台数据。
+        调用 OneBot 协议（NapCat）的任意 Action API。
 
         Args:
-            action (string): 要调用的 OneBot Action 名称，例如 "get_friend_list"、"send_group_msg" 等。
-            params (object): 该 Action 所需的参数对象，键为参数名，值为对应值。若无参数可不填或传空对象 {}。
-            limit(number): 可选，如果结果是列表，设置返回的最大数量，防止内容过多。默认不截断，传 20 表示最多返回 20 条。
-        Returns:
-            string: 返回该 Action 的 JSON 格式响应结果（格式化缩进 4 空格）
+            action (string): Action 名称，如 "get_friend_list"。
+            params (object): 参数对象，无参数传 {}。
+            limit(number): 可选。结果为列表时截取前 N 条，默认不截断。
         """
         err = self._check_permission(event, action)
         if err:
@@ -161,7 +160,7 @@ class OneBotToolkit(Star):
 
     @filter.llm_tool(name="get_raw_message")
     async def get_raw_message(self, event: AiocqhttpMessageEvent) -> str:
-        """获取当前消息的原始 json 信息，当你想查看消息的底层底层数据结构或详细元数据时使用。"""
+        """获取当前消息的原始 JSON 数据。"""
         err = self._check_permission(event)
         if err:
             return err
@@ -179,14 +178,12 @@ class OneBotToolkit(Star):
             message_array: list[dict] = None,
             receive_result: bool = False
     ) -> str | None:
-        """使用 OneBot API 发送组合/复杂消息到当前聊天。
-
-        纯文本消息请直接返回，禁止使用工具。注意，视频和文件只能单独发，无法与其他混在一起。
+        """使用 OneBot API 发送组合/复杂消息到当前聊天。纯文本请直接返回，禁止使用工具。视频和文件只能单独发。
 
         Args:
-            message_str(string): 可选。要发送的 CQ 码字符串（如 [CQ:at,qq=xxx]这是你想要的图[CQ:image,file=/tmp/t.jpg][CQ:face,id=272]）。
-            message_array(array[object]): 可选。OneBot API 的消息段数组，例如 [{"type": "face", "data": {"id": "272"}}]。
-            receive_result(boolean): 可选。是否接收发送成功的反馈。默认值为 false（成功后直接结束对话，无需追加回复，建议一次性就把东西发完，减少重复请求/调用）。如果需要继续向用户汇报，才设为 true。
+            message_str(string): 可选。CQ 码字符串，如 [CQ:at,qq=xxx]你好[CQ:image,file=/tmp/t.jpg]。
+            message_array(array[object]): 可选。消息段数组，如 [{"type":"face","data":{"id":"272"}}]。
+            receive_result(boolean): 可选。是否返回发送结果。默认 false，非必要建议保持 false，一次性把内容发完。
         """
         err = self._check_permission(event)
         if err:
@@ -290,17 +287,19 @@ class OneBotToolkit(Star):
             self,
             event: AiocqhttpMessageEvent,
             count: int = 20,
-            message_id: int = 0,
+            minutes: int = 0,
+            msg_id: int = 0,
             max_length: int = 50,
             show_message_id: bool = False
     ) -> str:
         """获取当前群聊近 n 条消息记录，格式化为易读的对话记录。仅在群聊场景下可用。
 
         Args:
-            count(number): 可选。获取消息的最大条数，默认 20。
-            message_id(number): 可选。起始消息 ID，从此消息往前查。默认 0 表示从最新消息开始。
-            max_length(number): 可选。每条消息内容的最大字符数，超出截断并用省略号表示。默认 50，传 -1 表示不截断。建议保持默认值以防止单条消息过长导致输出臃肿。
-            show_message_id(boolean): 可选。是否在每条消息前显示其 message_id。默认 false。
+            count(number): 可选。最大条数，默认 20，上限 100。
+            minutes(number): 可选。回溯时间范围（分钟），默认 0 不限制。与 count 叠加，先触限先停。
+            msg_id(number): 可选。起始消息 ID，从此往前查。默认 0 从最新开始。
+            max_length(number): 可选。单条消息最大字符数，超出截断。默认 50，-1 不截断。
+            show_message_id(boolean): 可选。是否显示 message_id。默认 false。
         """
         err = self._check_permission(event)
         if err:
@@ -312,21 +311,71 @@ class OneBotToolkit(Star):
 
         count = max(1, min(int(count), 100))
         max_length = int(max_length) if max_length is not None else 50
+        cutoff = int(_time.time()) - minutes * 60 if minutes > 0 else 0
 
-        try:
-            params = {"group_id": group_id, "count": count}
-            if message_id:
-                params["message_id"] = message_id
-            result = await event.bot.call_action("get_group_msg_history", **params)
-        except Exception as e:
-            return f"❌ 获取群消息记录失败: {str(e)}"
+        collected = {}
+        current_anchor = msg_id or None
+        deadline = _time.monotonic() + 15
 
-        messages = result.get("messages", []) if isinstance(result, dict) else []
+        for _ in range(10):
+            if _time.monotonic() > deadline:
+                break
 
-        if not messages:
+            params = {"group_id": group_id, "count": 100, "reverseOrder": True}
+            if current_anchor is not None:
+                params["message_seq"] = current_anchor
+
+            try:
+                result = await event.bot.call_action("get_group_msg_history", **params)
+            except Exception as e:
+                if not collected:
+                    return f"❌ 获取群消息记录失败: {str(e)}"
+                break
+
+            messages = result.get("messages", []) if isinstance(result, dict) else []
+            if not messages:
+                break
+
+            first_time = messages[0].get("time", 0)
+            last_time = messages[-1].get("time", 0)
+            chunk_earliest = messages[-1] if first_time > last_time else messages[0]
+            chunk_earliest_time = chunk_earliest.get("time", 0)
+
+            for msg in messages:
+                msg_time = msg.get("time", 0)
+                if cutoff and msg_time < cutoff:
+                    continue
+                msg_id = msg.get("message_id")
+                if msg_id in collected:
+                    continue
+                collected[msg_id] = {
+                    "raw_message": msg,
+                    "time": msg_time
+                }
+                if len(collected) >= count:
+                    break
+
+            if len(collected) >= count:
+                break
+            if cutoff and chunk_earliest_time < cutoff:
+                break
+
+            new_anchor = chunk_earliest.get("message_seq")
+            if new_anchor is None:
+                new_anchor = chunk_earliest.get("real_id")
+            if new_anchor is None:
+                new_anchor = chunk_earliest.get("seq")
+            if new_anchor is None:
+                new_anchor = chunk_earliest.get("message_id")
+            if new_anchor is None or (current_anchor is not None and str(new_anchor) == str(current_anchor)):
+                break
+            current_anchor = new_anchor
+
+        if not collected:
             return "ℹ️ 没有获取到消息记录"
 
-        lines = [self._format_message_line(msg, max_length, show_message_id) for msg in messages]
+        items = sorted(collected.values(), key=lambda x: x["time"], reverse=True)[:count]
+        lines = [self._format_message_line(it["raw_message"], max_length, show_message_id) for it in items]
         return "\n".join(lines)
 
     @filter.llm_tool(name="batch_delete_msg")
@@ -371,15 +420,15 @@ class OneBotToolkit(Star):
             user_id: int,
             minutes: int = 10,
             max_count: int = 20,
-            max_length: int = 100
+            max_length: int = 50
     ) -> str:
         """获取当前群内指定用户最近 n 分钟内的发言记录。仅在群聊场景下可用。
 
         Args:
             user_id(number): 目标用户的 QQ 号。
-            minutes(number): 可选。回溯的时间范围（分钟），默认 10。
-            max_count(number): 可选。返回消息的最大条数，默认 20，上限 100。
-            max_length(number): 可选。每条消息内容的最大字符数，超出截断用省略号表示。默认 100，传 -1 表示不截断。
+            minutes(number): 可选。回溯时间范围（分钟），默认 10。
+            max_count(number): 可选。最大条数，默认 20，上限 100。
+            max_length(number): 可选。单条消息最大字符数，超出截断。默认 50，-1 不截断。
         """
         err = self._check_permission(event)
         if err:
@@ -391,7 +440,7 @@ class OneBotToolkit(Star):
 
         minutes = max(1, min(int(minutes), 1440))
         max_count = max(1, min(int(max_count), 100))
-        max_length = int(max_length) if max_length is not None else 100
+        max_length = int(max_length) if max_length is not None else 50
 
         cutoff = int(_time.time()) - minutes * 60
         collected = {}  # 用 dict 去重，key=message_id
@@ -469,3 +518,26 @@ class OneBotToolkit(Star):
         lines = [f"msg_id={it['message_id']}：{it['content']}" for it in items]
         header = f"用户 {user_id} 最近 {minutes} 分钟内的发言（共 {len(items)} 条）：\n"
         return header + "\n".join(lines)
+
+    @filter.llm_tool(name="get_msg_content")
+    async def get_msg_content(
+            self,
+            event: AiocqhttpMessageEvent,
+            msg_id: int
+    ) -> str:
+        """通过消息 ID 获取消息内容，返回带 CQ 码的 raw_message 字符串。
+
+        Args:
+            msg_id(number): 消息 ID。
+        """
+        err = self._check_permission(event)
+        if err:
+            return err
+
+        try:
+            result = await event.bot.call_action("get_msg", message_id=int(msg_id))
+        except Exception as e:
+            return f"❌ 获取消息失败: {str(e)}"
+
+        raw = result.get("raw_message", "") if isinstance(result, dict) else str(result)
+        return raw if raw else json.dumps(result, ensure_ascii=False, indent=4)
