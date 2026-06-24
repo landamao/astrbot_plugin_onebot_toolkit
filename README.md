@@ -93,7 +93,7 @@ data/plugins/onebot_toolkit/
 - **参数**：
   - `action` (string)：Action 名称，如 `get_friend_list`、`send_group_msg`
   - `params` (object)：该 Action 的参数对象，无参数时传 `{}`
-  - `limit` (number, 可选)：如果结果是列表，设置返回的最大数量，防止内容过多。默认 20，传 -1 表示无限制
+  - `limit` (number, 可选)：如果结果是列表，设置返回的最大数量，防止内容过多。默认不截断，传 20 表示最多返回 20 条
 - **返回**：JSON 格式响应（缩进 4 空格，保留中文）
 - **白名单过滤**：非管理员只能调用允许列表中的 Action，OneBot 新增的未列出动作默认拒绝；管理员不受限制
 
@@ -138,7 +138,8 @@ data/plugins/onebot_toolkit/
   - `count` (number, 可选)：获取消息的最大条数，默认 20，上限 100
   - `message_id` (number, 可选)：起始消息 ID，从此消息往前查。默认 0 表示从最新消息开始
   - `max_length` (number, 可选)：每条消息内容的最大字符数，超出截断并用省略号表示。默认 50，传 -1 表示不截断
-- **返回**：格式化的对话记录，每行一条，格式为 `昵称：消息内容`
+  - `show_message_id` (boolean, 可选)：是否在每条消息前显示其 message_id，默认 false
+- **返回**：格式化的对话记录，每行一条，格式为 `昵称：消息内容`（开启 show_message_id 时为 `message_id=xxx;昵称：消息内容`）
 - **CQ 码精简**：图片只保留 file 参数，回复只保留 id 参数，其他 CQ 码保留类型名和首个参数
 - **昵称显示**：优先显示群名片，无名片则使用昵称
 

@@ -1,5 +1,15 @@
 # Changelog
 
+## v1.7.1
+
+- 修复 `call_action` 的 `limit` 参数签名：默认值从 `20` 改为 `None`，消除死代码分支
+- 修复 `batch_delete_msg` 的 `int(mid)` 异常处理：非数字 ID 现在返回明确错误而非泛用报错
+- 修复 `get_user_recent_msgs` 锚点提取的 falsy 陷阱：`message_seq=0` 不再被错误跳过
+- `get_user_recent_msgs` 新增 15 秒超时保护，防止大量 API 调用阻塞
+- 提取 `_check_permission`、`_format_message_line`、`_get_group_id` 公共方法，消除重复代码
+- README 补充 `get_group_msg_history` 缺失的 `show_message_id` 参数文档
+- README 更新 `call_action` 的 `limit` 参数说明
+
 ## v1.7.0
 
 - 新增 `get_user_recent_msgs`：获取群内指定用户最近 n 分钟内的发言记录，支持设置最大返回条数和每条消息最大字数

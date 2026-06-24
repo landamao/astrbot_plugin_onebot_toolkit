@@ -39,7 +39,7 @@ class OneBotToolkit(Star):
 
         禁用的动作 = config.get('非管理员禁用的动作', [])  # 与 _conf_schema.json 的 key 一致
 
-        动作映射 = {
+        self._动作映射 = {
             "发送私聊消息": "send_private_msg",
             "发送群消息": "send_group_msg",
             "发送消息": "send_msg",
@@ -78,34 +78,59 @@ class OneBotToolkit(Star):
             "清理缓存": "clean_cache"
         }
 
-        self.允许的列表 = set(动作映射.values())
+        self._允许的列表 = set(self._动作映射.values())
         for k in 禁用的动作:
-            if k in 动作映射:
-                self.允许的列表.discard(动作映射[k])
+            if k in self._动作映射:
+                self._允许的列表.discard(self._动作映射[k])
             else:
                 logger.warning(f"配置中的禁用动作「{k}」不是有效动作，已忽略")
-        self.仅管理员可用 = not bool(config.get('允许非管理员', False))
+        self._仅管理员可用 = not bool(config.get('允许非管理员', False))
+
+    def _check_permission(self, event: AiocqhttpMessageEvent, action: str = None) -> str | None:
+        """校验平台、管理员权限和白名单。通过返回 None，失败返回错误消息。"""
+        if not isinstance(event, AiocqhttpMessageEvent):
+            return "⚠️ 当前平台非 OneBot，不可用"
+        if not event.is_admin() and self._仅管理员可用:
+            return "⚠️ 管理员设置了权限，当前用户无权限"
+        if action is not None and not event.is_admin() and action not in self._允许的列表:
+            return "⚠️ 管理员未允许该动作请求"
+        return None
+
+    def _format_message_line(self, msg: dict, max_length: int = 50, show_id: bool = False) -> str:
+        """将单条消息格式化为易读的一行文字。"""
+        nickname = msg.get("sender", {}).get("nickname", "未知")
+        card = msg.get("sender", {}).get("card", "")
+        display_name = card or nickname
+        raw_msg = msg.get("raw_message", "")
+        simplified = _simplify_cq_codes(raw_msg)
+        if max_length != -1 and len(simplified) > max_length:
+            simplified = simplified[:max_length] + "…"
+        if show_id:
+            return f"message_id={msg.get('message_id')};{display_name}：{simplified}"
+        return f"{display_name}：{simplified}"
+
+    @staticmethod
+    def _get_group_id(event: AiocqhttpMessageEvent) -> int | None:
+        """从事件中提取 group_id，私聊时返回 None。"""
+        return event.message_obj.raw_message.get("group_id")
 
     @filter.llm_tool(name="call_onebot_action")
-    async def call_action(self, event: AiocqhttpMessageEvent, action: str, params: dict, limit: int = 20) -> str:
+    async def call_action(self, event: AiocqhttpMessageEvent, action: str, params: dict, limit: int = None) -> str:
         """
         调用 OneBot 协议（NapCat）的任意 Action API，获取 QQ 平台数据。
 
         Args:
             action (string): 要调用的 OneBot Action 名称，例如 "get_friend_list"、"send_group_msg" 等。
             params (object): 该 Action 所需的参数对象，键为参数名，值为对应值。若无参数可不填或传空对象 {}。
-            limit(number): 可选，如果结果是列表，设置返回的最大数量，防止内容过多。默认 20，传 -1 表示无限制。
+            limit(number): 可选，如果结果是列表，设置返回的最大数量，防止内容过多。默认不截断，传 20 表示最多返回 20 条。
         Returns:
             string: 返回该 Action 的 JSON 格式响应结果（格式化缩进 4 空格）
         """
-        if not isinstance(event, AiocqhttpMessageEvent):
-            return "⚠️ 当前平台非 OneBot，不可用"
-        if not event.is_admin() and self.仅管理员可用:
-            return "⚠️ 管理员设置了权限，当前用户无权限"
+        err = self._check_permission(event, action)
+        if err:
+            return err
         if not isinstance(action, str):
             return "❌️ action参数的类型不正确"
-        if not event.is_admin() and action not in self.允许的列表:
-            return "⚠️ 管理员未允许该动作请求"
         if limit is not None:
             try:
                 limit = int(limit)
@@ -113,10 +138,10 @@ class OneBotToolkit(Star):
                 return "❌️ limit 参数的类型不正确"
 
         try:
-            result = await event.bot.call_action(action, **params)
+            result = await event.bot.call_action(action, **(params or {}))
 
-            # 处理长度限制：兼容三种常见结果形态（-1 表示无限制）
-            if limit is not None and limit != -1:
+            # 处理长度限制：兼容三种常见结果形态
+            if limit is not None and limit > 0:
                 # 1. 结果本身直接是列表
                 if isinstance(result, list):
                     return json.dumps(result[:limit], ensure_ascii=False, indent=4)
@@ -137,11 +162,14 @@ class OneBotToolkit(Star):
     @filter.llm_tool(name="get_raw_message")
     async def get_raw_message(self, event: AiocqhttpMessageEvent) -> str:
         """获取当前消息的原始 json 信息，当你想查看消息的底层底层数据结构或详细元数据时使用。"""
+        err = self._check_permission(event)
+        if err:
+            return err
         try:
-            raw = dict(event.message_obj.raw_message)  # 尝试转换dict，如果平台支持
+            raw = dict(event.message_obj.raw_message)
             return json.dumps(raw, ensure_ascii=False, indent=4)
         except Exception:
-            return str(event.get_messages())  # 不行则返回框架消息链
+            return str(event.get_messages())
 
     @filter.llm_tool(name="send_onebot_msg")
     async def send_onebot_msg(
@@ -160,10 +188,10 @@ class OneBotToolkit(Star):
             message_array(array[object]): 可选。OneBot API 的消息段数组，例如 [{"type": "face", "data": {"id": "272"}}]。
             receive_result(boolean): 可选。是否接收发送成功的反馈。默认值为 false（成功后直接结束对话，无需追加回复，建议一次性就把东西发完，减少重复请求/调用）。如果需要继续向用户汇报，才设为 true。
         """
-        if not isinstance(event, AiocqhttpMessageEvent):
-            return "⚠️ 当前平台非 OneBot，不可用"
+        err = self._check_permission(event)
+        if err:
+            return err
 
-        # 1. 选择参数
         if message_array:
             message = message_array
         elif message_str:
@@ -171,24 +199,19 @@ class OneBotToolkit(Star):
         else:
             return "❌ 错误：message_str 和 message_array 不能同时为空，请至少提供一个参数。"
 
-        # 2. 调用 OneBot API 发送
-        raw = event.message_obj.raw_message
         try:
+            raw = event.message_obj.raw_message
             result = await event.bot.call_action(
                 "send_msg",
-                group_id=raw.get("group_id"),  # 为 None 则自动发送私聊消息
+                group_id=raw.get("group_id"),
                 user_id=raw.get("user_id"),
                 message=message
             )
-
-            # 默认返回 None，大模型执行完该工具后直接闭嘴，不再继续回复
             if receive_result:
                 return f"🚀 消息发送成功，结果：{result}"
             else:
                 return None
-
         except Exception as e:
-            # 失败时始终返回错误信息，确保大模型知情
             return f"❌ 消息发送失败，错误信息：{str(e)}"
 
     @filter.llm_tool(name="get_group_member_list")
@@ -202,11 +225,11 @@ class OneBotToolkit(Star):
         Args:
             limit(number): 可选。返回成员的数量上限，最大 20，默认 20。
         """
-        if not isinstance(event, AiocqhttpMessageEvent):
-            return "⚠️ 当前平台非 OneBot，不可用"
+        err = self._check_permission(event)
+        if err:
+            return err
 
-        raw = event.message_obj.raw_message
-        group_id = raw.get("group_id")
+        group_id = self._get_group_id(event)
         if not group_id:
             return "⚠️ 当前非群聊场景，无法获取群成员列表"
 
@@ -239,11 +262,11 @@ class OneBotToolkit(Star):
         Args:
             user_id(number): 目标用户的 QQ 号。
         """
-        if not isinstance(event, AiocqhttpMessageEvent):
-            return "⚠️ 当前平台非 OneBot，不可用"
+        err = self._check_permission(event)
+        if err:
+            return err
 
-        raw = event.message_obj.raw_message
-        group_id = raw.get("group_id")
+        group_id = self._get_group_id(event)
         if not group_id:
             return "⚠️ 当前非群聊场景，无法获取群成员信息"
 
@@ -279,11 +302,11 @@ class OneBotToolkit(Star):
             max_length(number): 可选。每条消息内容的最大字符数，超出截断并用省略号表示。默认 50，传 -1 表示不截断。建议保持默认值以防止单条消息过长导致输出臃肿。
             show_message_id(boolean): 可选。是否在每条消息前显示其 message_id。默认 false。
         """
-        if not isinstance(event, AiocqhttpMessageEvent):
-            return "⚠️ 当前平台非 OneBot，不可用"
+        err = self._check_permission(event)
+        if err:
+            return err
 
-        raw = event.message_obj.raw_message
-        group_id = raw.get("group_id")
+        group_id = self._get_group_id(event)
         if not group_id:
             return "⚠️ 当前非群聊场景，无法获取群消息记录"
 
@@ -303,20 +326,7 @@ class OneBotToolkit(Star):
         if not messages:
             return "ℹ️ 没有获取到消息记录"
 
-        lines = []
-        for msg in messages:
-            nickname = msg.get("sender", {}).get("nickname", "未知")
-            card = msg.get("sender", {}).get("card", "")
-            display_name = card or nickname
-            raw_msg = msg.get("raw_message", "")
-            simplified = _simplify_cq_codes(raw_msg)
-            if max_length != -1 and len(simplified) > max_length:
-                simplified = simplified[:max_length] + "…"
-            if show_message_id:
-                lines.append(f"message_id={msg['message_id']};{display_name}：{simplified}")
-            else:
-                lines.append(f"{display_name}：{simplified}")
-
+        lines = [self._format_message_line(msg, max_length, show_message_id) for msg in messages]
         return "\n".join(lines)
 
     @filter.llm_tool(name="batch_delete_msg")
@@ -330,12 +340,9 @@ class OneBotToolkit(Star):
         Args:
             message_ids(array[string]): 要撤回的消息 ID 列表，例如 ["123456", "789012"]。
         """
-        if not isinstance(event, AiocqhttpMessageEvent):
-            return "⚠️ 当前平台非 OneBot，不可用"
-        if not event.is_admin() and self.仅管理员可用:
-            return "⚠️ 管理员设置了权限，当前用户无权限"
-        if not event.is_admin() and "delete_msg" not in self.允许的列表:
-            return "⚠️ 管理员未允许该动作请求"
+        err = self._check_permission(event, "delete_msg")
+        if err:
+            return err
         if not isinstance(message_ids, list) or not message_ids:
             return "❌ message_ids 必须是非空数组"
 
@@ -343,7 +350,12 @@ class OneBotToolkit(Star):
         success = 0
         for mid in message_ids:
             try:
-                await event.bot.call_action("delete_msg", message_id=int(mid))
+                mid_int = int(mid)
+            except (ValueError, TypeError):
+                results.append(f"❌ message_id={mid} 无效：必须是数字")
+                continue
+            try:
+                await event.bot.call_action("delete_msg", message_id=mid_int)
                 results.append(f"✅ message_id={mid} 撤回成功")
                 success += 1
             except Exception as e:
@@ -369,11 +381,11 @@ class OneBotToolkit(Star):
             max_count(number): 可选。返回消息的最大条数，默认 20，上限 100。
             max_length(number): 可选。每条消息内容的最大字符数，超出截断用省略号表示。默认 100，传 -1 表示不截断。
         """
-        if not isinstance(event, AiocqhttpMessageEvent):
-            return "⚠️ 当前平台非 OneBot，不可用"
+        err = self._check_permission(event)
+        if err:
+            return err
 
-        raw = event.message_obj.raw_message
-        group_id = raw.get("group_id")
+        group_id = self._get_group_id(event)
         if not group_id:
             return "⚠️ 当前非群聊场景，无法获取群消息记录"
 
@@ -384,8 +396,12 @@ class OneBotToolkit(Star):
         cutoff = int(_time.time()) - minutes * 60
         collected = {}  # 用 dict 去重，key=message_id
         current_anchor = None
+        deadline = _time.monotonic() + 15  # 15 秒超时保护
 
         for _ in range(10):
+            if _time.monotonic() > deadline:
+                break
+
             params = {"group_id": group_id, "count": 100, "reverseOrder": True}
             if current_anchor is not None:
                 params["message_seq"] = current_anchor
@@ -404,13 +420,7 @@ class OneBotToolkit(Star):
             # 动态检测顺序：比较首尾时间戳
             first_time = messages[0].get("time", 0)
             last_time = messages[-1].get("time", 0)
-            if first_time > last_time:
-                # 逆序：最新在前
-                chunk_earliest = messages[-1]
-            else:
-                # 正序：最旧在前
-                chunk_earliest = messages[0]
-
+            chunk_earliest = messages[-1] if first_time > last_time else messages[0]
             chunk_earliest_time = chunk_earliest.get("time", 0)
 
             for msg in messages:
@@ -426,8 +436,7 @@ class OneBotToolkit(Star):
                 if msg_id in collected:
                     continue
 
-                raw_msg = msg.get("raw_message", "")
-                simplified = _simplify_cq_codes(raw_msg)
+                simplified = _simplify_cq_codes(msg.get("raw_message", ""))
                 if max_length != -1 and len(simplified) > max_length:
                     simplified = simplified[:max_length] + "…"
                 collected[msg_id] = {
@@ -440,13 +449,14 @@ class OneBotToolkit(Star):
             if chunk_earliest_time < cutoff:
                 break
 
-            # 提取锚点：message_seq > real_id > seq > message_id
-            new_anchor = (
-                chunk_earliest.get("message_seq")
-                or chunk_earliest.get("real_id")
-                or chunk_earliest.get("seq")
-                or chunk_earliest.get("message_id")
-            )
+            # 提取锚点：message_seq > real_id > seq > message_id（用 is None 避免 0 被当作 falsy）
+            new_anchor = chunk_earliest.get("message_seq")
+            if new_anchor is None:
+                new_anchor = chunk_earliest.get("real_id")
+            if new_anchor is None:
+                new_anchor = chunk_earliest.get("seq")
+            if new_anchor is None:
+                new_anchor = chunk_earliest.get("message_id")
             if new_anchor is None or (current_anchor is not None and str(new_anchor) == str(current_anchor)):
                 break
             current_anchor = new_anchor
