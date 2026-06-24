@@ -456,6 +456,6 @@ class OneBotToolkit(Star):
         if not items:
             return f"ℹ️ 该用户在最近 {minutes} 分钟内没有发言记录"
 
-        lines = [f"[{it['message_id']}] {it['content']}" for it in items]
+        lines = [f"msg_id={it['message_id']}：{it['content']}" for it in items]
         header = f"用户 {user_id} 最近 {minutes} 分钟内的发言（共 {len(items)} 条）：\n"
         return header + "\n".join(lines)
