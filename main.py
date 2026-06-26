@@ -1,6 +1,7 @@
 import json
 import re
 import time as _time
+from pathlib import Path
 from astrbot.api.event import filter
 from astrbot.api.all import Star, Context, AstrBotConfig, logger
 from astrbot.core.platform.sources.aiocqhttp.aiocqhttp_message_event import AiocqhttpMessageEvent
@@ -85,6 +86,7 @@ class OneBotToolkit(Star):
             else:
                 logger.warning(f"配置中的允许动作「{k}」不是有效动作，已忽略")
         self._仅管理员可用 = not bool(config.get('允许非管理员', False))
+        self._ai解答消息条数 = max(1, min(int(config.get('AI解答消息条数', 10)), 100))
 
     def _check_permission(self, event: AiocqhttpMessageEvent, action: str = None) -> str | None:
         """校验平台和权限。通过返回 None，失败返回错误消息。"""
@@ -542,3 +544,245 @@ class OneBotToolkit(Star):
 
         raw = result.get("raw_message", "") if isinstance(result, dict) else str(result)
         return raw if raw else json.dumps(result, ensure_ascii=False, indent=4)
+
+    # ========== AI解答：独立调用LLM分析群消息 ==========
+
+    @staticmethod
+    def _extract_reply_id(event: AiocqhttpMessageEvent) -> int | None:
+        """从事件中提取引用消息的ID"""
+        raw = event.message_obj.raw_message
+        raw_str = raw.get("raw_message", "") if isinstance(raw, dict) else str(raw)
+        match = re.search(r"\[CQ:reply,id=(\d+)\]", raw_str)
+        return int(match.group(1)) if match else None
+
+    async def _fetch_group_messages(
+        self, event: AiocqhttpMessageEvent, count: int, anchor_msg_id: int | None = None
+    ) -> list[dict]:
+        """获取群消息历史，返回按时间正序排列的消息列表。
+        anchor_msg_id: 锚点消息ID，获取包含锚点在内的最近count条消息"""
+        group_id = self._get_group_id(event)
+        if not group_id:
+            return []
+
+        count = max(1, min(count, 100))
+        collected: dict[int, dict] = {}
+        current_anchor = None
+
+        # Resolve anchor message_seq for paginated fetching
+        if anchor_msg_id:
+            try:
+                anchor = await event.bot.call_action("get_msg", message_id=int(anchor_msg_id))
+                current_anchor = (
+                    anchor.get("message_seq")
+                    or anchor.get("real_id")
+                    or anchor.get("seq")
+                )
+            except Exception:
+                pass
+
+        deadline = _time.monotonic() + 15
+
+        for _ in range(10):
+            if _time.monotonic() > deadline:
+                break
+
+            params = {"group_id": group_id, "count": 100, "reverseOrder": True}
+            if current_anchor is not None:
+                params["message_seq"] = current_anchor
+
+            try:
+                result = await event.bot.call_action("get_group_msg_history", **params)
+            except Exception:
+                if not collected:
+                    return []
+                break
+
+            messages = result.get("messages", []) if isinstance(result, dict) else []
+            if not messages:
+                break
+
+            first_time = messages[0].get("time", 0)
+            last_time = messages[-1].get("time", 0)
+            chunk_earliest = messages[-1] if first_time > last_time else messages[0]
+
+            for msg in messages:
+                msg_id = msg.get("message_id")
+                if msg_id in collected:
+                    continue
+                collected[msg_id] = msg
+                if len(collected) >= count:
+                    break
+
+            if len(collected) >= count:
+                break
+
+            new_anchor = (
+                chunk_earliest.get("message_seq")
+                or chunk_earliest.get("real_id")
+                or chunk_earliest.get("seq")
+                or chunk_earliest.get("message_id")
+            )
+            if new_anchor is None or (
+                current_anchor is not None and str(new_anchor) == str(current_anchor)
+            ):
+                break
+            current_anchor = new_anchor
+
+        # If anchor specified but not in results, fetch it separately
+        if anchor_msg_id and anchor_msg_id not in collected:
+            try:
+                anchor = await event.bot.call_action("get_msg", message_id=int(anchor_msg_id))
+                collected[anchor.get("message_id", anchor_msg_id)] = anchor
+            except Exception:
+                pass
+
+        items = sorted(collected.values(), key=lambda x: x.get("time", 0))
+        return items[-count:]
+
+    @staticmethod
+    def _load_provider_ids() -> tuple[str, list[str]]:
+        """Read main provider ID and fallback list from cmd_config.json"""
+        config_path = Path(__file__).resolve().parent.parent.parent / "cmd_config.json"
+        with open(config_path, encoding="utf-8") as f:
+            config = json.load(f)
+        ps = config.get("provider_settings", {})
+        return ps.get("default_provider_id", ""), ps.get("fallback_chat_models", [])
+
+    async def _tool_loop_agent_with_fallback(
+        self, event: AiocqhttpMessageEvent, prompt: str, system_prompt: str = "",
+        tools=None,
+    ) -> tuple[str, str]:
+        """Call tool_loop_agent with fallback. Returns (text, model_id)"""
+        main_id, fallback_ids = self._load_provider_ids()
+        all_ids = [main_id] + fallback_ids
+        last_error = ""
+        for pid in all_ids:
+            if not pid:
+                continue
+            try:
+                resp = await self.context.tool_loop_agent(
+                    event=event,
+                    chat_provider_id=pid,
+                    prompt=prompt,
+                    system_prompt=system_prompt,
+                    tools=tools,
+                )
+                return resp.completion_text, pid
+            except Exception as e:
+                last_error = str(e)
+                logger.warning(f"[AI解答] 模型 {pid} 调用失败: {last_error}")
+                continue
+        raise Exception(f"所有模型均调用失败，最后错误: {last_error}")
+
+    @filter.command("AI解答", alias={"ai解答"})
+    async def ai解答(self, event: AiocqhttpMessageEvent):
+        """引用消息则解答该消息相关问题，未引用则分析最近对话。支持参数：数字→获取n条记录；文本→直接提问。可调用工具"""
+        event.stop_event()
+
+        group_id = self._get_group_id(event)
+        if not group_id:
+            yield event.plain_result("⚠️ AI解答目前仅支持群聊场景")
+            return
+
+        # 解析指令参数
+        raw_text = event.get_message_str().strip()
+        arg = ""
+        for prefix in ("/AI解答", "AI解答", "/ai解答", "ai解答"):
+            if raw_text.startswith(prefix):
+                arg = raw_text[len(prefix):].strip()
+                break
+
+        # 判断参数类型：数字→消息条数，文本→直接提问
+        custom_count = None
+        direct_text = None
+        if arg:
+            try:
+                custom_count = int(arg)
+            except ValueError:
+                direct_text = arg
+
+        count = custom_count if custom_count else self._ai解答消息条数
+        reply_id = self._extract_reply_id(event)
+
+        # 取全部已注册的LLM工具
+        tools = self.context.get_llm_tool_manager().get_full_tool_set()
+
+        try:
+            if direct_text:
+                mode = "直接提问"
+                logger.info(f"[AI解答] 模式={mode} 问题: {direct_text[:50]}")
+                yield event.plain_result(f"🔍 AI解答中({mode})，请稍候…")
+                result_text, used_model = await self._tool_loop_agent_with_fallback(
+                    event, direct_text, "你是一个智能助手，可以使用工具获取信息，请给出详细、准确的解答。", tools
+                )
+                logger.info(f"[AI解答] 完成，使用模型: {used_model}")
+                yield event.plain_result(f"模型: {used_model}\n\n{result_text}")
+
+            elif reply_id:
+                mode = "锚点引用"
+                logger.info(f"[AI解答] 模式={mode} 锚点msg_id={reply_id} 获取{count}条上下文")
+                messages = await self._fetch_group_messages(event, count, reply_id)
+                lines = []
+                for msg in messages:
+                    line = self._format_message_line(msg, max_length=-1)
+                    if str(msg.get("message_id")) == str(reply_id):
+                        line = f"【问题锚点】{line}"
+                    lines.append(line)
+                conversation = "\n".join(lines)
+                prompt = (
+                    f"以下是群聊对话记录：\n{conversation}\n\n"
+                    "请解答标记为【问题锚点】的消息所涉及的问题。"
+                    "结合上下文语境，给出详细、准确的解答。"
+                    "你可以使用工具搜索资料来辅助解答。"
+                )
+                system_prompt = (
+                    "你是一个群聊分析助手。用户引用了群聊中的某条消息，"
+                    "请结合上下文对话记录，解答该消息所涉及的问题。"
+                    "你可以使用工具获取额外信息。"
+                )
+
+                if not messages:
+                    yield event.plain_result("ℹ️ 没有获取到消息记录")
+                    return
+
+                yield event.plain_result(f"🔍 AI解答中({mode})，请稍候…")
+                logger.info(f"[AI解答] 获取到{len(messages)}条消息，开始调用LLM")
+                result_text, used_model = await self._tool_loop_agent_with_fallback(
+                    event, prompt, system_prompt, tools
+                )
+                logger.info(f"[AI解答] 完成，使用模型: {used_model}")
+                yield event.plain_result(f"模型: {used_model}\n\n{result_text}")
+
+            else:
+                mode = "最近对话"
+                logger.info(f"[AI解答] 模式={mode} 获取最近{count}条消息")
+                messages = await self._fetch_group_messages(event, count)
+                lines = [self._format_message_line(msg, max_length=-1) for msg in messages]
+                conversation = "\n".join(lines)
+                prompt = (
+                    f"以下是群聊最近的对话记录：\n{conversation}\n\n"
+                    "请识别其中可能的问题并给出解答。"
+                    "如果没有明确的问题，请总结讨论要点。"
+                    "你可以使用工具搜索资料来辅助解答。"
+                )
+                system_prompt = (
+                    "你是一个群聊分析助手。请分析最近的群聊对话记录，"
+                    "识别其中可能的问题并给出解答。"
+                    "你可以使用工具获取额外信息。"
+                )
+
+                if not messages:
+                    yield event.plain_result("ℹ️ 没有获取到消息记录")
+                    return
+
+                yield event.plain_result(f"🔍 AI解答中({mode}，{count}条)，请稍候…")
+                logger.info(f"[AI解答] 获取到{len(messages)}条消息，开始调用LLM")
+                result_text, used_model = await self._tool_loop_agent_with_fallback(
+                    event, prompt, system_prompt, tools
+                )
+                logger.info(f"[AI解答] 完成，使用模型: {used_model}")
+                yield event.plain_result(f"模型: {used_model}\n\n{result_text}")
+
+        except Exception as e:
+            logger.error(f"[AI解答] 失败: {e}", exc_info=True)
+            yield event.plain_result(f"❌ AI解答失败: {e}")

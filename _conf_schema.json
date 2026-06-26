@@ -64,5 +64,11 @@
         "condition": {
             "允许非管理员": true
         }
+    },
+    "AI解答消息条数": {
+        "description": "AI解答获取消息条数",
+        "type": "int",
+        "hint": "使用/AI解答指令时获取的上下文消息条数，范围1-100",
+        "default": 10
     }
 }

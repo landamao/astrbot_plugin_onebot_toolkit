@@ -1,5 +1,13 @@
 # Changelog
 
+## v1.11.0
+
+- 新增 `/AI解答` 指令：引用消息→以该消息为锚点获取上下文并解答；未引用→分析最近对话识别问题并解答
+- 使用 `tool_loop_agent` 替代 `llm_generate`：AI解答可调用所有已注册LLM工具（网页搜索、群消息查询等），独立于主聊天上下文运行
+- 新增配置项「AI解答消息条数」（默认10，范围1-100）
+- 新增内部方法 `_fetch_group_messages`、`_extract_reply_id`、`_load_provider_ids`、`_tool_loop_agent_with_fallback`
+- LLM调用读取 `cmd_config.json` 主模型+回退模型列表，主模型失败逐个回退
+
 ## v1.10.3
 
 - `batch_delete_msg` 返回结果精简：成功仅提示数量，失败仅显示消息 ID
