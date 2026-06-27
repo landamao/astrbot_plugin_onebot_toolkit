@@ -839,3 +839,41 @@ class OneBotToolkit(Star):
         except Exception as e:
             logger.error(f"[AI解答] 失败: {e}", exc_info=True)
             yield event.plain_result(f"❌ AI解答失败: {e}")
+
+    @filter.llm_tool(name="ai_solve")
+    async def ai_solve(
+        self,
+        event: AiocqhttpMessageEvent,
+        question: str,
+        return_result: bool = False,
+    ) -> str | None:
+        """独立调用AI解答用户问题。会启动独立的agent循环，可使用搜索等工具获取信息，不影响当前对话上下文。
+
+        Args:
+            question (string): 要解答的问题。
+            return_result (boolean): 可选。true时返回解答结果文本，由你继续处理。false时工具自行发送解答结果并结束对话，你不需要再回复，降低上下文开销。默认false（推荐）。
+        """
+        # 取工具集，排除自身避免递归
+        tools = self.context.get_llm_tool_manager().get_full_tool_set()
+        tools.remove_tool("ai_solve")
+
+        try:
+            result_text, used_model = await self._tool_loop_agent_with_fallback(
+                event, question,
+                "你是一个智能助手，可以使用工具获取信息，请给出详细、准确的解答。",
+                tools,
+            )
+        except Exception as e:
+            logger.error(f"[ai_solve] 调用失败: {e}", exc_info=True)
+            return f"AI解答失败: {e}"
+
+        reply_text = f"模型: {used_model}\n\n{result_text}"
+
+        if return_result:
+            return reply_text
+
+        # 自行发送并结束对话
+        trigger_msg_id = event.message_obj.raw_message.get("message_id")
+        if not await self._send_forward_result(event, reply_text, reply_msg_id=trigger_msg_id):
+            await event.send(event.plain_result(reply_text))
+        return None
