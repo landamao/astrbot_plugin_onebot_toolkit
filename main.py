@@ -565,20 +565,32 @@ class OneBotToolkit(Star):
             return []
 
         count = max(1, min(count, 100))
+
+        # 无锚点：直接请求count条最新消息，不分页
+        if not anchor_msg_id:
+            try:
+                result = await event.bot.call_action(
+                    "get_group_msg_history",
+                    group_id=group_id, count=count, reverseOrder=True,
+                )
+            except Exception:
+                return []
+            messages = result.get("messages", []) if isinstance(result, dict) else []
+            return sorted(messages, key=lambda x: x.get("time", 0))
+
+        # 有锚点：分页获取锚点附近的count条消息
         collected: dict[int, dict] = {}
         current_anchor = None
 
-        # Resolve anchor message_seq for paginated fetching
-        if anchor_msg_id:
-            try:
-                anchor = await event.bot.call_action("get_msg", message_id=int(anchor_msg_id))
-                current_anchor = (
-                    anchor.get("message_seq")
-                    or anchor.get("real_id")
-                    or anchor.get("seq")
-                )
-            except Exception:
-                pass
+        try:
+            anchor = await event.bot.call_action("get_msg", message_id=int(anchor_msg_id))
+            current_anchor = (
+                anchor.get("message_seq")
+                or anchor.get("real_id")
+                or anchor.get("seq")
+            )
+        except Exception:
+            pass
 
         deadline = _time.monotonic() + 15
 
@@ -586,7 +598,7 @@ class OneBotToolkit(Star):
             if _time.monotonic() > deadline:
                 break
 
-            params = {"group_id": group_id, "count": 100, "reverseOrder": True}
+            params = {"group_id": group_id, "count": count, "reverseOrder": True}
             if current_anchor is not None:
                 params["message_seq"] = current_anchor
 
@@ -674,6 +686,38 @@ class OneBotToolkit(Star):
                 continue
         raise Exception(f"所有模型均调用失败，最后错误: {last_error}")
 
+    async def _send_forward_result(
+        self, event: AiocqhttpMessageEvent, text: str, reply_msg_id: int | None = None,
+        bot_name: str = "AI解答",
+    ) -> bool:
+        """以合并转发方式发送结果，失败回退到普通消息。成功返回True"""
+        group_id = self._get_group_id(event)
+        if not group_id:
+            return False
+
+        nodes = []
+        if reply_msg_id:
+            nodes.append({"type": "node", "data": {"id": int(reply_msg_id)}})
+
+        bot_qq = event.get_self_id() or "0"
+        nodes.append({
+            "type": "node",
+            "data": {
+                "uin": int(bot_qq),
+                "name": bot_name,
+                "content": [{"type": "text", "data": {"text": text}}],
+            },
+        })
+
+        try:
+            await event.bot.call_action(
+                "send_group_forward_msg", group_id=group_id, messages=nodes
+            )
+            return True
+        except Exception as e:
+            logger.warning(f"[AI解答] 合并转发失败: {e}，回退普通消息")
+            return False
+
     @filter.command("AI解答", alias={"ai解答"})
     async def ai解答(self, event: AiocqhttpMessageEvent):
         """引用消息则解答该消息相关问题，未引用则分析最近对话。支持参数：数字→获取n条记录；文本→直接提问。可调用工具"""
@@ -716,7 +760,10 @@ class OneBotToolkit(Star):
                     event, direct_text, "你是一个智能助手，可以使用工具获取信息，请给出详细、准确的解答。", tools
                 )
                 logger.info(f"[AI解答] 完成，使用模型: {used_model}")
-                yield event.plain_result(f"模型: {used_model}\n\n{result_text}")
+                reply_text = f"模型: {used_model}\n\n{result_text}"
+                trigger_msg_id = event.message_obj.raw_message.get("message_id")
+                if not await self._send_forward_result(event, reply_text, reply_msg_id=trigger_msg_id):
+                    yield event.plain_result(reply_text)
 
             elif reply_id:
                 mode = "锚点引用"
@@ -724,13 +771,14 @@ class OneBotToolkit(Star):
                 messages = await self._fetch_group_messages(event, count, reply_id)
                 lines = []
                 for msg in messages:
-                    line = self._format_message_line(msg, max_length=-1)
+                    line = self._format_message_line(msg, max_length=-1, show_id=True)
                     if str(msg.get("message_id")) == str(reply_id):
                         line = f"【问题锚点】{line}"
                     lines.append(line)
                 conversation = "\n".join(lines)
+                logger.info(f"[AI解答] 获取到{len(messages)}条消息:\n{conversation}")
                 prompt = (
-                    f"以下是群聊对话记录：\n{conversation}\n\n"
+                    f"以下是群聊对话记录（每行格式为 msg_id=消息ID;昵称：消息内容，按时间从早到晚排列）：\n{conversation}\n\n"
                     "请解答标记为【问题锚点】的消息所涉及的问题。"
                     "结合上下文语境，给出详细、准确的解答。"
                     "你可以使用工具搜索资料来辅助解答。"
@@ -746,21 +794,24 @@ class OneBotToolkit(Star):
                     return
 
                 yield event.plain_result(f"🔍 AI解答中({mode})，请稍候…")
-                logger.info(f"[AI解答] 获取到{len(messages)}条消息，开始调用LLM")
                 result_text, used_model = await self._tool_loop_agent_with_fallback(
                     event, prompt, system_prompt, tools
                 )
                 logger.info(f"[AI解答] 完成，使用模型: {used_model}")
-                yield event.plain_result(f"模型: {used_model}\n\n{result_text}")
+                reply_text = f"模型: {used_model}\n\n{result_text}"
+                trigger_msg_id = event.message_obj.raw_message.get("message_id")
+                if not await self._send_forward_result(event, reply_text, reply_msg_id=trigger_msg_id):
+                    yield event.plain_result(reply_text)
 
             else:
                 mode = "最近对话"
                 logger.info(f"[AI解答] 模式={mode} 获取最近{count}条消息")
                 messages = await self._fetch_group_messages(event, count)
-                lines = [self._format_message_line(msg, max_length=-1) for msg in messages]
+                lines = [self._format_message_line(msg, max_length=-1, show_id=True) for msg in messages]
                 conversation = "\n".join(lines)
+                logger.info(f"[AI解答] 获取到{len(messages)}条消息:\n{conversation}")
                 prompt = (
-                    f"以下是群聊最近的对话记录：\n{conversation}\n\n"
+                    f"以下是群聊最近的对话记录（每行格式为 msg_id=消息ID;昵称：消息内容，按时间从早到晚排列）：\n{conversation}\n\n"
                     "请识别其中可能的问题并给出解答。"
                     "如果没有明确的问题，请总结讨论要点。"
                     "你可以使用工具搜索资料来辅助解答。"
@@ -776,12 +827,14 @@ class OneBotToolkit(Star):
                     return
 
                 yield event.plain_result(f"🔍 AI解答中({mode}，{count}条)，请稍候…")
-                logger.info(f"[AI解答] 获取到{len(messages)}条消息，开始调用LLM")
                 result_text, used_model = await self._tool_loop_agent_with_fallback(
                     event, prompt, system_prompt, tools
                 )
                 logger.info(f"[AI解答] 完成，使用模型: {used_model}")
-                yield event.plain_result(f"模型: {used_model}\n\n{result_text}")
+                reply_text = f"模型: {used_model}\n\n{result_text}"
+                trigger_msg_id = event.message_obj.raw_message.get("message_id")
+                if not await self._send_forward_result(event, reply_text, reply_msg_id=trigger_msg_id):
+                    yield event.plain_result(reply_text)
 
         except Exception as e:
             logger.error(f"[AI解答] 失败: {e}", exc_info=True)
