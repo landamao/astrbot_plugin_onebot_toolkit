@@ -74,7 +74,11 @@ class OneBotToolkit(Star):
             "获取插件运行状态": "get_status",
             "获取版本信息": "get_version_info",
             "重启OneBot": "set_restart",
-            "清理缓存": "clean_cache"
+            "清理缓存": "clean_cache",
+            "获取原始消息": "get_raw_message",
+            "获取群消息历史": "get_group_msg_history",
+            "获取用户近期消息": "get_user_recent_msgs",
+            "获取消息内容": "get_msg_content"
         }
 
         允许的动作 = config.get('非管理员允许的动作', [])  # 与 _conf_schema.json 的 key 一致
@@ -92,9 +96,9 @@ class OneBotToolkit(Star):
         """校验平台和权限。通过返回 None，失败返回错误消息。"""
         if not isinstance(event, AiocqhttpMessageEvent):
             return "⚠️ 当前平台非 OneBot，不可用"
+        if not event.is_admin() and self._仅管理员可用:
+            return "⚠️ 管理员设置了权限，当前用户无权限"
         if action is not None:
-            if not event.is_admin() and self._仅管理员可用:
-                return "⚠️ 管理员设置了权限，当前用户无权限"
             if not event.is_admin() and action not in self._允许的列表:
                 return "⚠️ 管理员未允许该动作请求"
         return None
@@ -163,7 +167,7 @@ class OneBotToolkit(Star):
     @filter.llm_tool(name="get_raw_message")
     async def get_raw_message(self, event: AiocqhttpMessageEvent) -> str:
         """获取当前消息的原始 JSON 数据。"""
-        err = self._check_permission(event)
+        err = self._check_permission(event, "get_raw_message")
         if err:
             return err
         try:
@@ -187,7 +191,7 @@ class OneBotToolkit(Star):
             message_array(array[object]): 可选。消息段数组，如 [{"type":"face","data":{"id":"272"}}]。
             receive_result(boolean): 可选。是否返回发送结果。默认 false，非必要建议保持 false，一次性把内容发完。
         """
-        err = self._check_permission(event)
+        err = self._check_permission(event, "send_msg")
         if err:
             return err
 
@@ -224,7 +228,7 @@ class OneBotToolkit(Star):
         Args:
             limit(number): 可选。返回成员的数量上限，最大 20，默认 20。
         """
-        err = self._check_permission(event)
+        err = self._check_permission(event, "get_group_member_list")
         if err:
             return err
 
@@ -261,7 +265,7 @@ class OneBotToolkit(Star):
         Args:
             user_id(number): 目标用户的 QQ 号。
         """
-        err = self._check_permission(event)
+        err = self._check_permission(event, "get_group_member_info")
         if err:
             return err
 
@@ -303,7 +307,7 @@ class OneBotToolkit(Star):
             max_length(number): 可选。单条消息最大字符数，超出截断。默认 50，-1 不截断。
             show_message_id(boolean): 可选。是否显示 message_id。默认 false。
         """
-        err = self._check_permission(event)
+        err = self._check_permission(event, "get_group_msg_history")
         if err:
             return err
 
@@ -433,7 +437,7 @@ class OneBotToolkit(Star):
             max_count(number): 可选。最大条数，默认 20，上限 100。
             max_length(number): 可选。单条消息最大字符数，超出截断。默认 50，-1 不截断。
         """
-        err = self._check_permission(event)
+        err = self._check_permission(event, "get_user_recent_msgs")
         if err:
             return err
 
@@ -533,7 +537,7 @@ class OneBotToolkit(Star):
         Args:
             msg_id(number): 消息 ID。
         """
-        err = self._check_permission(event)
+        err = self._check_permission(event, "get_msg_content")
         if err:
             return err
 
