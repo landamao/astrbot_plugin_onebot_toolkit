@@ -313,8 +313,31 @@ class OneBotToolkit(Star):
 
         count = max(1, min(int(count), 100))
         max_length = int(max_length) if max_length is not None else 50
+        minutes = max(0, int(minutes or 0))
         cutoff = int(_time.time()) - minutes * 60 if minutes > 0 else 0
 
+        # NapCat 返回通常是旧→新。
+        # 无锚点且无时间过滤时，直接按 count 拉最新窗口，避免“先塞满旧消息就停”。
+        if not msg_id and minutes <= 0:
+            try:
+                result = await event.bot.call_action(
+                    "get_group_msg_history",
+                    group_id=group_id,
+                    count=count,
+                    reverseOrder=True,
+                )
+            except Exception as e:
+                return f"❌ 获取群消息记录失败: {str(e)}"
+
+            messages = result.get("messages", []) if isinstance(result, dict) else []
+            if not messages:
+                return "ℹ️ 没有获取到消息记录"
+
+            items = sorted(messages, key=lambda x: x.get("time", 0), reverse=True)[:count]
+            lines = [self._format_message_line(msg, max_length, show_message_id) for msg in items]
+            return "\n".join(lines)
+
+        # 有锚点 / 时间范围：整页收集后再按时间取最新 count 条，禁止中途按条数早停
         collected = {}
         current_anchor = msg_id or None
         deadline = _time.monotonic() + 15
@@ -347,19 +370,18 @@ class OneBotToolkit(Star):
                 msg_time = msg.get("time", 0)
                 if cutoff and msg_time < cutoff:
                     continue
-                msg_id = msg.get("message_id")
-                if msg_id in collected:
+                mid = msg.get("message_id")
+                if mid in collected:
                     continue
-                collected[msg_id] = {
+                collected[mid] = {
                     "raw_message": msg,
                     "time": msg_time
                 }
-                if len(collected) >= count:
-                    break
 
-            if len(collected) >= count:
-                break
             if cutoff and chunk_earliest_time < cutoff:
+                break
+            # 整页收完后再判断；NapCat 返回旧→新，中途按条数早停会拿到最旧消息
+            if len(collected) >= count:
                 break
 
             new_anchor = chunk_earliest.get("message_seq")
@@ -618,22 +640,22 @@ class OneBotToolkit(Star):
             chunk_earliest = messages[-1] if first_time > last_time else messages[0]
 
             for msg in messages:
-                msg_id = msg.get("message_id")
-                if msg_id in collected:
+                mid = msg.get("message_id")
+                if mid in collected:
                     continue
-                collected[msg_id] = msg
-                if len(collected) >= count:
-                    break
+                collected[mid] = msg
 
+            # 整页收集后再判断；NapCat 返回旧→新，中途按条数早停会拿到最旧的消息
             if len(collected) >= count:
                 break
 
-            new_anchor = (
-                chunk_earliest.get("message_seq")
-                or chunk_earliest.get("real_id")
-                or chunk_earliest.get("seq")
-                or chunk_earliest.get("message_id")
-            )
+            new_anchor = chunk_earliest.get("message_seq")
+            if new_anchor is None:
+                new_anchor = chunk_earliest.get("real_id")
+            if new_anchor is None:
+                new_anchor = chunk_earliest.get("seq")
+            if new_anchor is None:
+                new_anchor = chunk_earliest.get("message_id")
             if new_anchor is None or (
                 current_anchor is not None and str(new_anchor) == str(current_anchor)
             ):
