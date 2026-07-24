@@ -333,7 +333,8 @@ class OneBotToolkit(Star):
             if not messages:
                 return "ℹ️ 没有获取到消息记录"
 
-            items = sorted(messages, key=lambda x: x.get("time", 0), reverse=True)[:count]
+            # 取最新 count 条，再按时间正序（旧→新）输出，方便 LLM 读对话
+            items = sorted(messages, key=lambda x: x.get("time", 0))[-count:]
             lines = [self._format_message_line(msg, max_length, show_message_id) for msg in items]
             return "\n".join(lines)
 
@@ -398,7 +399,8 @@ class OneBotToolkit(Star):
         if not collected:
             return "ℹ️ 没有获取到消息记录"
 
-        items = sorted(collected.values(), key=lambda x: x["time"], reverse=True)[:count]
+        # 取最新 count 条，再按时间正序（旧→新）输出
+        items = sorted(collected.values(), key=lambda x: x["time"])[-count:]
         lines = [self._format_message_line(it["raw_message"], max_length, show_message_id) for it in items]
         return "\n".join(lines)
 
@@ -535,7 +537,7 @@ class OneBotToolkit(Star):
                 break
             current_anchor = new_anchor
 
-        items = sorted(collected.values(), key=lambda x: x["time"], reverse=True)[:max_count]
+        items = sorted(collected.values(), key=lambda x: x["time"])[-max_count:]
 
         if not items:
             return f"ℹ️ 该用户在最近 {minutes} 分钟内没有发言记录"

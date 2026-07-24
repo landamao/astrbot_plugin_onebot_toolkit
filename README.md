@@ -150,7 +150,7 @@ data/plugins/onebot_toolkit/
 | `msg_id` (number, 可选) | 起始消息 ID，从此往前查。默认 0 从最新开始 |
 | `max_length` (number, 可选) | 单条消息最大字符数，超出截断。默认 50，-1 不截断 |
 | `show_message_id` (boolean, 可选) | 是否显示 message_id。默认 false |
-- **返回**：格式化的对话记录，每行一条，格式为 `昵称：消息内容`（开启 show_message_id 时为 `message_id=xxx;昵称：消息内容`）
+- **返回**：格式化的对话记录，每行一条，**按时间正序（旧→新）**，格式为 `昵称：消息内容`（开启 show_message_id 时为 `message_id=xxx;昵称：消息内容`）
 - **CQ 码精简**：图片只保留 file 参数，回复只保留 id 参数，其他 CQ 码保留类型名和首个参数
 - **昵称显示**：优先显示群名片，无名片则使用昵称
 
@@ -172,7 +172,7 @@ data/plugins/onebot_toolkit/
   - `minutes` (number, 可选)：回溯的时间范围（分钟），默认 10，上限 1440（24小时）
   - `max_count` (number, 可选)：返回消息的最大条数，默认 20，上限 100
   - `max_length` (number, 可选)：单条消息最大字符数，超出截断。默认 50，-1 不截断
-- **返回**：格式化的发言记录，每行格式为 `msg_id=消息ID：消息内容`，按时间倒序排列
+- **返回**：格式化的发言记录，每行格式为 `msg_id=消息ID：消息内容`，**按时间正序（旧→新）排列**
 - **分页策略**：使用 `reverseOrder: True` + `message_seq` 分页回溯，动态检测消息顺序，每轮 100 条最多 10 轮，支持去重
 
 ### get_msg_content

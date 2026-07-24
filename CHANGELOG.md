@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.12.2
+
+- 修复 `get_group_msg_history` 输出顺序倒置：改为按时间正序（旧→新）返回，与正常聊天记录一致，便于 LLM 理解上下文
+- `get_user_recent_msgs` 同步改为时间正序（旧→新）输出
+
 ## v1.12.1
 
 - 修复 `get_group_msg_history` 在 NapCat 返回旧→新时，中途按 `count` 早停导致取到旧消息而非最新消息
