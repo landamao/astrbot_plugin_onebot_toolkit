@@ -6,6 +6,25 @@ from pathlib import Path
 from astrbot.api.event import filter
 from astrbot.api.all import Star, Context, AstrBotConfig, logger
 from astrbot.core.platform.sources.aiocqhttp.aiocqhttp_message_event import AiocqhttpMessageEvent
+from astrbot.core.tools.image_generation_tools import (
+    GenerateImageTool,
+    ListImageGenerationModelsTool,
+)
+from astrbot.core.tools.image_tools import ImageCaptionTool
+from astrbot.core.tools.message_tools import SendMessageToUserTool
+from astrbot.core.tools.transcription_tools import TranscribeMediaTool
+from astrbot.core.tools.web_search_tools import (
+    BaiduWebSearchTool,
+    BochaWebSearchTool,
+    BraveWebSearchTool,
+    ExaGetContentsTool,
+    ExaWebSearchTool,
+    FirecrawlExtractWebPageTool,
+    FirecrawlWebSearchTool,
+    TavilyExtractWebPageTool,
+    TavilyWebSearchTool,
+    normalize_legacy_web_search_config,
+)
 
 
 def _simplify_cq_codes(raw_message: str) -> str:
@@ -699,14 +718,55 @@ class OneBotToolkit(Star):
         items = sorted(collected.values(), key=lambda x: x.get("time", 0))
         return items[-count:]
 
-    def _get_ai解答工具集(self, exclude: str = ""):
-        """获取全部已注册LLM工具，并按配置的通配符模式排除（如 *file*、shell*）"""
+    def _get_ai解答工具集(self, event: AiocqhttpMessageEvent, exclude: str = ""):
+        """获取全部已注册LLM工具与按主配置开启的内置工具，并按配置的通配符模式排除（如 *file*、shell*）"""
         tools = self.context.get_llm_tool_manager().get_full_tool_set()
+        self._注入内置工具(event, tools)
         patterns = [p.lower() for p in self._ai解答排除工具]
         for name in [t.name for t in tools.tools]:
             if name == exclude or any(fnmatch.fnmatchcase(name.lower(), p) for p in patterns):
                 tools.remove_tool(name)
         return tools
+
+    def _注入内置工具(self, event: AiocqhttpMessageEvent, tools) -> None:
+        """内置工具不常驻工具管理器，是正常对话管线在请求装配阶段按开关注入的；
+        tool_loop_agent 不走管线装配，这里按同样条件把已开启的内置工具补进工具集。
+        注入条件须与 astr_main_agent.py 的 _apply_web_search_tools 等函数保持一致。"""
+        tool_mgr = self.context.get_llm_tool_manager()
+        cfg = self.context.get_config(umo=event.unified_msg_origin)
+        prov_settings = cfg.get("provider_settings", {})
+        if not isinstance(prov_settings, dict):
+            prov_settings = {}
+
+        if prov_settings.get("web_search", False):
+            normalize_legacy_web_search_config(cfg)
+            websearch_classes = {
+                "tavily": [TavilyWebSearchTool, TavilyExtractWebPageTool],
+                "bocha": [BochaWebSearchTool],
+                "brave": [BraveWebSearchTool],
+                "firecrawl": [FirecrawlWebSearchTool, FirecrawlExtractWebPageTool],
+                "baidu_ai_search": [BaiduWebSearchTool],
+                "exa": [ExaWebSearchTool, ExaGetContentsTool],
+            }
+            provider = prov_settings.get("websearch_provider", "tavily")
+            for cls in websearch_classes.get(provider, []):
+                tools.add_tool(tool_mgr.get_builtin_tool(cls))
+
+        if prov_settings.get("enable_image_generation_tool", False) and self.context.get_all_image_generation_providers():
+            tools.add_tool(tool_mgr.get_builtin_tool(GenerateImageTool))
+            tools.add_tool(tool_mgr.get_builtin_tool(ListImageGenerationModelsTool))
+
+        if str(prov_settings.get("default_image_caption_provider_id") or "").strip():
+            tools.add_tool(tool_mgr.get_builtin_tool(ImageCaptionTool))
+
+        stt_settings = cfg.get("provider_stt_settings", {})
+        if isinstance(stt_settings, dict) and stt_settings.get("enable", False) \
+                and str(stt_settings.get("provider_id") or "").strip():
+            tools.add_tool(tool_mgr.get_builtin_tool(TranscribeMediaTool))
+
+        platform_meta = getattr(event, "platform_meta", None)
+        if platform_meta and platform_meta.support_proactive_message:
+            tools.add_tool(tool_mgr.get_builtin_tool(SendMessageToUserTool))
 
     @staticmethod
     def _get_default_provider_id() -> str:
@@ -732,7 +792,7 @@ class OneBotToolkit(Star):
         # 核心在模型请求失败时不抛异常，而是返回 role="err" 的响应
         if getattr(resp, "role", "") == "err":
             raise Exception(resp.completion_text or "模型返回错误响应")
-        return resp.completion_text, pid
+        return resp.completion_text or "", pid
 
     async def _send_forward_result(
         self, event: AiocqhttpMessageEvent, text: str, reply_msg_id: int | None = None,
@@ -803,7 +863,7 @@ class OneBotToolkit(Star):
         count = custom_count if custom_count else self._ai解答消息条数
         reply_id = self._extract_reply_id(event)
 
-        tools = self._get_ai解答工具集()
+        tools = self._get_ai解答工具集(event, exclude="ai_solve")
 
         try:
             if direct_text:
@@ -913,7 +973,7 @@ class OneBotToolkit(Star):
             return_result (boolean): 可选。true时返回解答结果文本，由你继续处理。false时工具自行发送解答结果并结束对话，你不需要再回复，降低上下文开销。默认false（推荐）。
         """
         # 取工具集，排除自身避免递归
-        tools = self._get_ai解答工具集(exclude="ai_solve")
+        tools = self._get_ai解答工具集(event, exclude="ai_solve")
 
         try:
             result_text, used_model = await self._tool_loop_agent_once(
