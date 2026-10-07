@@ -1,3 +1,4 @@
+import fnmatch
 import json
 import re
 import time as _time
@@ -86,7 +87,10 @@ class OneBotToolkit(Star):
             else:
                 logger.warning(f"配置中的允许动作「{k}」不是有效动作，已忽略")
         self._仅管理员可用 = not bool(config.get('允许非管理员', False))
-        self._ai解答消息条数 = max(1, min(int(config.get('AI解答消息条数', 10)), 100))
+        ai解答设置 = config.get('AI解答设置') or config  # 嵌套分组缺失时退回平铺旧键，兼容旧配置
+        self._ai解答消息条数 = max(1, min(int(ai解答设置.get('AI解答消息条数', 10)), 100))
+        self._ai解答模型 = ai解答设置.get('AI解答模型') or ''
+        self._ai解答排除工具 = [str(p).strip() for p in (ai解答设置.get('AI解答排除工具') or []) if str(p).strip()]
 
     def _check_permission(self, event: AiocqhttpMessageEvent, action: str = None) -> str | None:
         """校验平台和权限。通过返回 None，失败返回错误消息。"""
@@ -99,18 +103,21 @@ class OneBotToolkit(Star):
                 return "⚠️ 管理员未允许该动作请求"
         return None
 
-    def _format_message_line(self, msg: dict, max_length: int = 50, show_id: bool = False) -> str:
-        """将单条消息格式化为易读的一行文字。"""
+    def _format_message_line(self, msg: dict, max_length: int = 50, show_id: bool = False, full_raw: bool = False) -> str:
+        """将单条消息格式化为易读的一行文字。full_raw 时直接使用原始 raw_message（含完整 CQ 码），不简化不截断。"""
         nickname = msg.get("sender", {}).get("nickname", "未知")
         card = msg.get("sender", {}).get("card", "")
         display_name = card or nickname
         raw_msg = msg.get("raw_message", "")
-        simplified = _simplify_cq_codes(raw_msg)
-        if max_length != -1 and len(simplified) > max_length:
-            simplified = simplified[:max_length] + "…"
+        if full_raw:
+            text = raw_msg
+        else:
+            text = _simplify_cq_codes(raw_msg)
+            if max_length != -1 and len(text) > max_length:
+                text = text[:max_length] + "…"
         if show_id:
-            return f"msg_id={msg.get('message_id')};{display_name}：{simplified}"
-        return f"{display_name}：{simplified}"
+            return f"msg_id={msg.get('message_id')};{display_name}：{text}"
+        return f"{display_name}：{text}"
 
     @staticmethod
     def _get_group_id(event: AiocqhttpMessageEvent) -> int | None:
@@ -292,7 +299,8 @@ class OneBotToolkit(Star):
             minutes: int = 0,
             msg_id: int = 0,
             max_length: int = 50,
-            show_message_id: bool = False
+            show_message_id: bool = False,
+            show_raw_message: bool = False
     ) -> str:
         """获取当前群聊近 n 条消息记录，格式化为易读的对话记录。仅在群聊场景下可用。
 
@@ -302,6 +310,7 @@ class OneBotToolkit(Star):
             msg_id(number): 可选。起始消息 ID，从此往前查。默认 0 从最新开始。
             max_length(number): 可选。单条消息最大字符数，超出截断。默认 50，-1 不截断。
             show_message_id(boolean): 可选。是否显示 message_id。默认 false。
+            show_raw_message(boolean): 可选。开启后直接输出每条消息的原始 raw_message（含完整 CQ 码信息），不再简化与截断，结果可能会非常长，请在必要时再使用。默认 false。
         """
         err = self._check_permission(event)
         if err:
@@ -335,7 +344,7 @@ class OneBotToolkit(Star):
 
             # 取最新 count 条，再按时间正序（旧→新）输出，方便 LLM 读对话
             items = sorted(messages, key=lambda x: x.get("time", 0))[-count:]
-            lines = [self._format_message_line(msg, max_length, show_message_id) for msg in items]
+            lines = [self._format_message_line(msg, max_length, show_message_id, full_raw=show_raw_message) for msg in items]
             return "\n".join(lines)
 
         # 有锚点 / 时间范围：整页收集后再按时间取最新 count 条，禁止中途按条数早停
@@ -401,7 +410,7 @@ class OneBotToolkit(Star):
 
         # 取最新 count 条，再按时间正序（旧→新）输出
         items = sorted(collected.values(), key=lambda x: x["time"])[-count:]
-        lines = [self._format_message_line(it["raw_message"], max_length, show_message_id) for it in items]
+        lines = [self._format_message_line(it["raw_message"], max_length, show_message_id, full_raw=show_raw_message) for it in items]
         return "\n".join(lines)
 
     @filter.llm_tool(name="batch_delete_msg")
@@ -675,40 +684,40 @@ class OneBotToolkit(Star):
         items = sorted(collected.values(), key=lambda x: x.get("time", 0))
         return items[-count:]
 
+    def _get_ai解答工具集(self, exclude: str = ""):
+        """获取全部已注册LLM工具，并按配置的通配符模式排除（如 *file*、shell*）"""
+        tools = self.context.get_llm_tool_manager().get_full_tool_set()
+        patterns = [p.lower() for p in self._ai解答排除工具]
+        for name in [t.name for t in tools.tools]:
+            if name == exclude or any(fnmatch.fnmatchcase(name.lower(), p) for p in patterns):
+                tools.remove_tool(name)
+        return tools
+
     @staticmethod
-    def _load_provider_ids() -> tuple[str, list[str]]:
-        """Read main provider ID and fallback list from cmd_config.json"""
+    def _get_default_provider_id() -> str:
+        """未配置专用模型时，读取 cmd_config.json 的全局默认对话模型 ID"""
         config_path = Path(__file__).resolve().parent.parent.parent / "cmd_config.json"
         with open(config_path, encoding="utf-8") as f:
             config = json.load(f)
-        ps = config.get("provider_settings", {})
-        return ps.get("default_provider_id", ""), ps.get("fallback_chat_models", [])
+        return config.get("provider_settings", {}).get("default_provider_id", "")
 
-    async def _tool_loop_agent_with_fallback(
+    async def _tool_loop_agent_once(
         self, event: AiocqhttpMessageEvent, prompt: str, system_prompt: str = "",
         tools=None,
     ) -> tuple[str, str]:
-        """Call tool_loop_agent with fallback. Returns (text, model_id)"""
-        main_id, fallback_ids = self._load_provider_ids()
-        all_ids = [main_id] + fallback_ids
-        last_error = ""
-        for pid in all_ids:
-            if not pid:
-                continue
-            try:
-                resp = await self.context.tool_loop_agent(
-                    event=event,
-                    chat_provider_id=pid,
-                    prompt=prompt,
-                    system_prompt=system_prompt,
-                    tools=tools,
-                )
-                return resp.completion_text, pid
-            except Exception as e:
-                last_error = str(e)
-                logger.warning(f"[AI解答] 模型 {pid} 调用失败: {last_error}")
-                continue
-        raise Exception(f"所有模型均调用失败，最后错误: {last_error}")
+        """调用配置的模型执行 tool_loop_agent，失败直接抛异常。返回 (text, model_id)"""
+        pid = self._ai解答模型 or self._get_default_provider_id()
+        resp = await self.context.tool_loop_agent(
+            event=event,
+            chat_provider_id=pid,
+            prompt=prompt,
+            system_prompt=system_prompt,
+            tools=tools,
+        )
+        # 核心在模型请求失败时不抛异常，而是返回 role="err" 的响应
+        if getattr(resp, "role", "") == "err":
+            raise Exception(resp.completion_text or "模型返回错误响应")
+        return resp.completion_text, pid
 
     async def _send_forward_result(
         self, event: AiocqhttpMessageEvent, text: str, reply_msg_id: int | None = None,
@@ -772,15 +781,14 @@ class OneBotToolkit(Star):
         count = custom_count if custom_count else self._ai解答消息条数
         reply_id = self._extract_reply_id(event)
 
-        # 取全部已注册的LLM工具
-        tools = self.context.get_llm_tool_manager().get_full_tool_set()
+        tools = self._get_ai解答工具集()
 
         try:
             if direct_text:
                 mode = "直接提问"
                 logger.info(f"[AI解答] 模式={mode} 问题: {direct_text[:50]}")
                 yield event.plain_result(f"🔍 AI解答中({mode})，请稍候…")
-                result_text, used_model = await self._tool_loop_agent_with_fallback(
+                result_text, used_model = await self._tool_loop_agent_once(
                     event, direct_text, "你是一个智能助手，可以使用工具获取信息，请给出详细、准确的解答。", tools
                 )
                 logger.info(f"[AI解答] 完成，使用模型: {used_model}")
@@ -818,7 +826,7 @@ class OneBotToolkit(Star):
                     return
 
                 yield event.plain_result(f"🔍 AI解答中({mode})，请稍候…")
-                result_text, used_model = await self._tool_loop_agent_with_fallback(
+                result_text, used_model = await self._tool_loop_agent_once(
                     event, prompt, system_prompt, tools
                 )
                 logger.info(f"[AI解答] 完成，使用模型: {used_model}")
@@ -851,7 +859,7 @@ class OneBotToolkit(Star):
                     return
 
                 yield event.plain_result(f"🔍 AI解答中({mode}，{count}条)，请稍候…")
-                result_text, used_model = await self._tool_loop_agent_with_fallback(
+                result_text, used_model = await self._tool_loop_agent_once(
                     event, prompt, system_prompt, tools
                 )
                 logger.info(f"[AI解答] 完成，使用模型: {used_model}")
@@ -878,11 +886,10 @@ class OneBotToolkit(Star):
             return_result (boolean): 可选。true时返回解答结果文本，由你继续处理。false时工具自行发送解答结果并结束对话，你不需要再回复，降低上下文开销。默认false（推荐）。
         """
         # 取工具集，排除自身避免递归
-        tools = self.context.get_llm_tool_manager().get_full_tool_set()
-        tools.remove_tool("ai_solve")
+        tools = self._get_ai解答工具集(exclude="ai_solve")
 
         try:
-            result_text, used_model = await self._tool_loop_agent_with_fallback(
+            result_text, used_model = await self._tool_loop_agent_once(
                 event, question,
                 "你是一个智能助手，可以使用工具获取信息，请给出详细、准确的解答。",
                 tools,

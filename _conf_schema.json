@@ -65,10 +65,30 @@
             "允许非管理员": true
         }
     },
-    "AI解答消息条数": {
-        "description": "AI解答获取消息条数",
-        "type": "int",
-        "hint": "使用/AI解答指令时获取的上下文消息条数，范围1-100",
-        "default": 10
+    "AI解答设置": {
+        "description": "AI解答相关配置",
+        "type": "object",
+        "hint": "「/AI解答」指令与 ai_solve 工具的设置",
+        "items": {
+            "AI解答消息条数": {
+                "description": "AI解答获取消息条数",
+                "type": "int",
+                "hint": "使用/AI解答指令时获取的上下文消息条数，范围1-100",
+                "default": 20
+            },
+            "AI解答模型": {
+                "description": "AI解答专用模型",
+                "type": "string",
+                "hint": "「/AI解答」指令与 ai_solve 工具使用的对话模型。留空则使用 AstrBot 全局默认对话模型。",
+                "_special": "select_provider",
+                "default": ""
+            },
+            "AI解答排除工具": {
+                "description": "额外排除的工具列表",
+                "type": "list",
+                "default": [],
+                "hint": "AI解答可调用的工具中需要排除的部分，支持 * 通配符，如 *file*、shell*。用于避免模型误用工具或精简提示词。"
+            }
+        }
     }
 }
