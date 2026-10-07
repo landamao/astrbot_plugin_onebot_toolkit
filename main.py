@@ -91,6 +91,21 @@ class OneBotToolkit(Star):
         self._ai解答消息条数 = max(1, min(int(ai解答设置.get('AI解答消息条数', 10)), 100))
         self._ai解答模型 = ai解答设置.get('AI解答模型') or ''
         self._ai解答排除工具 = [str(p).strip() for p in (ai解答设置.get('AI解答排除工具') or []) if str(p).strip()]
+        self._ai解答系统提示词 = str(ai解答设置.get('AI解答系统提示词') or '').strip()
+        self._需要指令触发 = ai解答设置.get("需要指令触发", False)
+
+    @filter.event_message_type(filter.EventMessageType.GROUP_MESSAGE)
+    async def on_group_message(self, event: AiocqhttpMessageEvent):
+        """监听群消息，触发AI解答"""
+        if self._需要指令触发:
+            return
+        if not (text:=event.get_message_str().strip()):
+            return
+        if not (text.lower().startswith("ai解答 ") or text.lower() == "ai解答"):
+            return
+
+        async for result in self.ai解答指令(event):
+            yield result
 
     def _check_permission(self, event: AiocqhttpMessageEvent, action: str = None) -> str | None:
         """校验平台和权限。通过返回 None，失败返回错误消息。"""
@@ -754,20 +769,21 @@ class OneBotToolkit(Star):
     @filter.command("AI解答", alias={"ai解答"})
     async def ai解答(self, event: AiocqhttpMessageEvent):
         """引用消息则解答该消息相关问题，未引用则分析最近对话。支持参数：数字→获取n条记录；文本→直接提问。可调用工具"""
-        event.stop_event()
+        if not self._需要指令触发:
+            return
+        async for result in self.ai解答指令(event):
+            yield result
 
+    async def ai解答指令(self, event: AiocqhttpMessageEvent):
         group_id = self._get_group_id(event)
         if not group_id:
             yield event.plain_result("⚠️ AI解答目前仅支持群聊场景")
+            event.stop_event()
             return
 
         # 解析指令参数
         raw_text = event.get_message_str().strip()
-        arg = ""
-        for prefix in ("/AI解答", "AI解答", "/ai解答", "ai解答"):
-            if raw_text.startswith(prefix):
-                arg = raw_text[len(prefix):].strip()
-                break
+        arg = ''.join(raw_text.split(maxsplit=1)[1:] or '')
 
         # 判断参数类型：数字→消息条数，文本→直接提问
         custom_count = None
@@ -775,6 +791,12 @@ class OneBotToolkit(Star):
         if arg:
             try:
                 custom_count = int(arg)
+                if custom_count < 1:
+                    yield event.plain_result(f"消息数过短，已使用默认值：{self._ai解答消息条数}")
+                    custom_count = max(custom_count, self._ai解答消息条数)
+                if custom_count > 100:
+                    yield event.plain_result("消息数量过大，获取最近100条")
+                    custom_count = min(custom_count, 100)
             except ValueError:
                 direct_text = arg
 
@@ -789,7 +811,9 @@ class OneBotToolkit(Star):
                 logger.info(f"[AI解答] 模式={mode} 问题: {direct_text[:50]}")
                 yield event.plain_result(f"🔍 AI解答中({mode})，请稍候…")
                 result_text, used_model = await self._tool_loop_agent_once(
-                    event, direct_text, "你是一个智能助手，可以使用工具获取信息，请给出详细、准确的解答。", tools
+                    event, direct_text,
+                    self._ai解答系统提示词 or "你是一个智能助手，可以使用工具获取信息，请给出详细、准确的解答。",
+                    tools
                 )
                 logger.info(f"[AI解答] 完成，使用模型: {used_model}")
                 reply_text = f"模型: {used_model}\n\n{result_text}"
@@ -815,7 +839,7 @@ class OneBotToolkit(Star):
                     "结合上下文语境，给出详细、准确的解答。"
                     "你可以使用工具搜索资料来辅助解答。"
                 )
-                system_prompt = (
+                system_prompt = self._ai解答系统提示词 or (
                     "你是一个群聊分析助手。用户引用了群聊中的某条消息，"
                     "请结合上下文对话记录，解答该消息所涉及的问题。"
                     "你可以使用工具获取额外信息。"
@@ -848,7 +872,7 @@ class OneBotToolkit(Star):
                     "如果没有明确的问题，请总结讨论要点。"
                     "你可以使用工具搜索资料来辅助解答。"
                 )
-                system_prompt = (
+                system_prompt = self._ai解答系统提示词 or (
                     "你是一个群聊分析助手。请分析最近的群聊对话记录，"
                     "识别其中可能的问题并给出解答。"
                     "你可以使用工具获取额外信息。"
@@ -871,6 +895,9 @@ class OneBotToolkit(Star):
         except Exception as e:
             logger.error(f"[AI解答] 失败: {e}", exc_info=True)
             yield event.plain_result(f"❌ AI解答失败: {e}")
+        finally:
+            # 必须在 LLM 请求结束后再停止事件传播：核心 agent 会监听事件停止信号并立即中止请求
+            event.stop_event()
 
     @filter.llm_tool(name="ai_solve")
     async def ai_solve(
@@ -891,7 +918,7 @@ class OneBotToolkit(Star):
         try:
             result_text, used_model = await self._tool_loop_agent_once(
                 event, question,
-                "你是一个智能助手，可以使用工具获取信息，请给出详细、准确的解答。",
+                self._ai解答系统提示词 or "你是一个智能助手，可以使用工具获取信息，请给出详细、准确的解答。",
                 tools,
             )
         except Exception as e:

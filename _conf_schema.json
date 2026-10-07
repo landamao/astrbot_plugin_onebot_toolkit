@@ -70,6 +70,12 @@
         "type": "object",
         "hint": "「/AI解答」指令与 ai_solve 工具的设置",
         "items": {
+            "需要指令触发": {
+                "description": "需要指令触发",
+                "type": "bool",
+                "hint": "开启后，AI解答需要指令才能触发，关闭后，群内直接发送`AI解答 xxx`即可触发",
+                "default": false
+            },
             "AI解答消息条数": {
                 "description": "AI解答获取消息条数",
                 "type": "int",
@@ -88,6 +94,12 @@
                 "type": "list",
                 "default": [],
                 "hint": "AI解答可调用的工具中需要排除的部分，支持 * 通配符，如 *file*、shell*。用于避免模型误用工具或精简提示词。"
+            },
+            "AI解答系统提示词": {
+                "description": "AI解答系统提示词",
+                "type": "text",
+                "default": "",
+                "hint": "「/AI解答」指令与 ai_solve 工具使用的系统提示词。留空则各场景使用内置默认提示词。"
             }
         }
     }
