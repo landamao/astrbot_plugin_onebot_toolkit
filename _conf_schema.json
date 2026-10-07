@@ -65,6 +65,28 @@
             "允许非管理员": true
         }
     },
+    "平台设置": {
+        "description": "平台设置",
+        "type": "object",
+        "hint": "OneBot平台相关设置",
+        "items": {
+            "注入系统提示词": {
+                "description": "注入系统提示词",
+                "type": "bool",
+                "hint": "开启后，注入提示词到system prompt，以指示llm行为",
+                "default": true
+            },
+            "系统提示词": {
+                "description": "系统提示词",
+                "type": "text",
+                "hint": "注入的系统提示词",
+                "default": "# 平台提醒\n当前消息平台为OneBot平台，可使用OneBot相关工具，平台不支持渲染Markdown文本，请勿将Markdown文本输出到正文",
+                "condition": {
+                    "注入系统提示词": true
+                }
+            }
+        }
+    },
     "AI解答设置": {
         "description": "AI解答相关配置",
         "type": "object",

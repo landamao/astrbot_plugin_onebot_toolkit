@@ -4,7 +4,7 @@ import re
 import time as _time
 from pathlib import Path
 from astrbot.api.event import filter
-from astrbot.api.all import Star, Context, AstrBotConfig, logger
+from astrbot.api.all import Star, Context, AstrBotConfig, logger, ProviderRequest
 from astrbot.core.platform.sources.aiocqhttp.aiocqhttp_message_event import AiocqhttpMessageEvent
 from astrbot.core.tools.image_generation_tools import (
     GenerateImageTool,
@@ -51,7 +51,7 @@ def _simplify_cq_codes(raw_message: str) -> str:
             return f"[CQ:{cq_type},{first_key}={params[first_key]}]"
         return f"[CQ:{cq_type}]"
 
-    return re.sub(r"\[CQ:(\w+)([^\]]*?)\]", _replace, raw_message)
+    return re.sub(r"\[CQ:(\w+)([^]]*?)]", _replace, raw_message)
 
 class OneBotToolkit(Star):
 
@@ -106,6 +106,9 @@ class OneBotToolkit(Star):
             else:
                 logger.warning(f"配置中的允许动作「{k}」不是有效动作，已忽略")
         self._仅管理员可用 = not bool(config.get('允许非管理员', False))
+        平台设置 = config.get('平台设置', {})
+        self.注入系统提示词 = 平台设置.get("注入系统提示词", True)
+        self.系统提示词 = 平台设置.get("系统提示词") or "# 平台提醒\n当前消息平台为OneBot平台，可使用OneBot相关工具，平台不支持渲染Markdown文本，请勿将Markdown文本输出到正文"
         ai解答设置 = config.get('AI解答设置') or config  # 嵌套分组缺失时退回平铺旧键，兼容旧配置
         self._ai解答消息条数 = max(1, min(int(ai解答设置.get('AI解答消息条数', 10)), 100))
         self._ai解答模型 = ai解答设置.get('AI解答模型') or ''
@@ -126,6 +129,15 @@ class OneBotToolkit(Star):
         async for result in self.ai解答指令(event):
             yield result
 
+    @filter.on_llm_request()
+    async def on_llm_request(self, event: AiocqhttpMessageEvent, req: ProviderRequest):
+        """llm请求前按条件注入系统提示词"""
+        if not isinstance(event, AiocqhttpMessageEvent):
+            return
+        if not self.注入系统提示词:
+            return
+        req.system_prompt += f"\n\n{self.系统提示词}\n\n"
+
     def _check_permission(self, event: AiocqhttpMessageEvent, action: str = None) -> str | None:
         """校验平台和权限。通过返回 None，失败返回错误消息。"""
         if not isinstance(event, AiocqhttpMessageEvent):
@@ -137,7 +149,8 @@ class OneBotToolkit(Star):
                 return "⚠️ 管理员未允许该动作请求"
         return None
 
-    def _format_message_line(self, msg: dict, max_length: int = 50, show_id: bool = False, full_raw: bool = False) -> str:
+    @staticmethod
+    def _format_message_line(msg: dict, max_length: int = 50, show_id: bool = False, full_raw: bool = False) -> str:
         """将单条消息格式化为易读的一行文字。full_raw 时直接使用原始 raw_message（含完整 CQ 码），不简化不截断。"""
         nickname = msg.get("sender", {}).get("nickname", "未知")
         card = msg.get("sender", {}).get("card", "")
@@ -619,7 +632,7 @@ class OneBotToolkit(Star):
         """从事件中提取引用消息的ID"""
         raw = event.message_obj.raw_message
         raw_str = raw.get("raw_message", "") if isinstance(raw, dict) else str(raw)
-        match = re.search(r"\[CQ:reply,id=(\d+)\]", raw_str)
+        match = re.search(r"\[CQ:reply,id=(\d+)]", raw_str)
         return int(match.group(1)) if match else None
 
     async def _fetch_group_messages(
@@ -872,7 +885,7 @@ class OneBotToolkit(Star):
                 yield event.plain_result(f"🔍 AI解答中({mode})，请稍候…")
                 result_text, used_model = await self._tool_loop_agent_once(
                     event, direct_text,
-                    self._ai解答系统提示词 or "你是一个智能助手，可以使用工具获取信息，请给出详细、准确的解答。",
+                    self._ai解答系统提示词 or "你是一个智能助手，可以使用工具获取信息，请给出详细、准确的解答。当前平台不支持渲染Markdown文本，请勿将Markdown文本输出到正文",
                     tools
                 )
                 logger.info(f"[AI解答] 完成，使用模型: {used_model}")
@@ -903,6 +916,7 @@ class OneBotToolkit(Star):
                     "你是一个群聊分析助手。用户引用了群聊中的某条消息，"
                     "请结合上下文对话记录，解答该消息所涉及的问题。"
                     "你可以使用工具获取额外信息。"
+                    "当前平台不支持渲染Markdown文本，请勿将Markdown文本输出到正文"
                 )
 
                 if not messages:
@@ -936,6 +950,7 @@ class OneBotToolkit(Star):
                     "你是一个群聊分析助手。请分析最近的群聊对话记录，"
                     "识别其中可能的问题并给出解答。"
                     "你可以使用工具获取额外信息。"
+                    "当前平台不支持渲染Markdown文本，请勿将Markdown文本输出到正文"
                 )
 
                 if not messages:
@@ -978,7 +993,7 @@ class OneBotToolkit(Star):
         try:
             result_text, used_model = await self._tool_loop_agent_once(
                 event, question,
-                self._ai解答系统提示词 or "你是一个智能助手，可以使用工具获取信息，请给出详细、准确的解答。",
+                self._ai解答系统提示词 or "你是一个智能助手，可以使用工具获取信息，请给出详细、准确的解答。当前平台不支持渲染Markdown文本，请勿将Markdown文本输出到正文",
                 tools,
             )
         except Exception as e:
