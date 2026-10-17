@@ -1,5 +1,13 @@
 # Changelog
 
+## v2.1.0
+
+- `get_raw_message` 新增参数 `message_id`：指定消息 ID 时返回该条消息的原始 JSON，不传则仍返回当前消息
+- `get_group_msg_history` 新增参数 `show_time`：开启后在每条消息前显示时间，格式 `[月-日 时:分:秒]`，默认 false
+- `get_user_recent_msgs` 新增参数 `show_time`：同上，时间显示在每条发言前，默认 false
+- 时间格式化抽为公共方法 `_format_ts`，两处工具共用同一格式
+- 配置与行为完全向后兼容，无破坏性变更
+
 ## v2.0.0
 
 - 新增「平台设置」配置分组：

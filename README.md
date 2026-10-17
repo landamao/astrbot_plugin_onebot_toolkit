@@ -9,13 +9,13 @@
 | 工具 | 说明 |
 |------|------|
 | `call_onebot_action` | 调用任意 OneBot Action API，支持返回数量限制与白名单过滤（管理员可用） |
-| `get_raw_message` | 获取当前消息的原始 JSON 数据结构 |
+| `get_raw_message` | 获取消息的原始 JSON 数据结构，可指定 message_id 获取任意消息 |
 | `send_onebot_msg` | 通过 OneBot API 发送组合/复杂消息（CQ 码字符串或消息段数组） |
 | `get_group_member_list` | 获取当前群成员列表，可选返回数量上限（最大 20） |
 | `get_group_member_info` | 获取当前群内指定用户的信息 |
-| `get_group_msg_history` | 获取当前群聊近 n 条消息记录，格式化为易读的对话记录（支持时间范围过滤，默认 20 条，上限 100） |
+| `get_group_msg_history` | 获取当前群聊近 n 条消息记录，格式化为易读的对话记录（支持时间范围过滤、显示时间，默认 20 条，上限 100） |
 | `batch_delete_msg` | 批量撤回消息，传入 message_id 列表逐条撤回并返回结果（管理员可用） |
-| `get_user_recent_msgs` | 获取群内指定用户最近 n 分钟内的发言记录，支持限制返回条数和每条最大字数 |
+| `get_user_recent_msgs` | 获取群内指定用户最近 n 分钟内的发言记录，支持限制返回条数、每条最大字数和显示时间 |
 | `get_msg_content` | 通过消息 ID 获取消息内容，返回带 CQ 码的 raw_message 字符串 |
 | `ai_solve` | LLM 在聊天时调用此工具独立解答用户问题，可使用搜索等工具，不影响对话上下文 |
 
@@ -129,9 +129,10 @@ data/plugins/onebot_toolkit/
 
 ### get_raw_message
 
-获取当前消息的原始 JSON 元数据，用于查看底层消息结构。
+获取消息的原始 JSON 元数据，用于查看底层消息结构。默认返回当前消息，也可指定 message_id 获取任意消息。
 
-- **参数**：无
+- **参数**：
+  - `message_id` (number, 可选)：指定消息 ID，返回该条消息的原始 JSON。默认 0 表示当前消息
 - **返回**：原始消息的 JSON 字符串；若平台不支持则回退为框架消息链
 
 ### send_onebot_msg
@@ -172,7 +173,8 @@ data/plugins/onebot_toolkit/
 | `max_length` (number, 可选) | 单条消息最大字符数，超出截断。默认 50，-1 不截断 |
 | `show_message_id` (boolean, 可选) | 是否显示 message_id。默认 false |
 | `show_raw_message` (boolean, 可选) | 开启后直接输出每条消息的原始 raw_message（含完整 CQ 码信息），不再简化与截断，结果可能会非常长，请在必要时再使用。默认 false |
-- **返回**：格式化的对话记录，每行一条，**按时间正序（旧→新）**，格式为 `昵称：消息内容`（开启 show_message_id 时为 `message_id=xxx;昵称：消息内容`）
+| `show_time` (boolean, 可选) | 是否在每条消息前显示时间，格式 `[月-日 时:分:秒]`。默认 false |
+- **返回**：格式化的对话记录，每行一条，**按时间正序（旧→新）**，格式为 `昵称：消息内容`（开启 show_message_id 时为 `message_id=xxx;昵称：消息内容`，开启 show_time 时行首带 `[月-日 时:分:秒] `）
 - **CQ 码精简**：图片只保留 file 参数，回复只保留 id 参数，其他 CQ 码保留类型名和首个参数。开启 `show_raw_message` 时跳过精简，直接输出原始 CQ 码
 - **昵称显示**：优先显示群名片，无名片则使用昵称
 
@@ -194,7 +196,8 @@ data/plugins/onebot_toolkit/
   - `minutes` (number, 可选)：回溯的时间范围（分钟），默认 10，上限 1440（24小时）
   - `max_count` (number, 可选)：返回消息的最大条数，默认 20，上限 100
   - `max_length` (number, 可选)：单条消息最大字符数，超出截断。默认 50，-1 不截断
-- **返回**：格式化的发言记录，每行格式为 `msg_id=消息ID：消息内容`，**按时间正序（旧→新）排列**
+  - `show_time` (boolean, 可选)：是否在每条发言前显示时间，格式 `[月-日 时:分:秒]`。默认 false
+- **返回**：格式化的发言记录，每行格式为 `msg_id=消息ID：消息内容`（开启 show_time 时行首带 `[月-日 时:分:秒] `），**按时间正序（旧→新）排列**
 - **分页策略**：使用 `reverseOrder: True` + `message_seq` 分页回溯，动态检测消息顺序，每轮 100 条最多 10 轮，支持去重
 
 ### get_msg_content

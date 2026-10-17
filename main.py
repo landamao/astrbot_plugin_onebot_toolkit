@@ -150,8 +150,15 @@ class OneBotToolkit(Star):
         return None
 
     @staticmethod
-    def _format_message_line(msg: dict, max_length: int = 50, show_id: bool = False, full_raw: bool = False) -> str:
-        """将单条消息格式化为易读的一行文字。full_raw 时直接使用原始 raw_message（含完整 CQ 码），不简化不截断。"""
+    def _format_ts(ts) -> str:
+        """时间戳格式化为 [月-日 时:分:秒] 前缀，无有效时间返回空串。"""
+        if not ts:
+            return ""
+        return _time.strftime("[%m-%d %H:%M:%S] ", _time.localtime(ts))
+
+    @staticmethod
+    def _format_message_line(msg: dict, max_length: int = 50, show_id: bool = False, full_raw: bool = False, show_time: bool = False) -> str:
+        """将单条消息格式化为易读的一行文字。full_raw 时直接使用原始 raw_message（含完整 CQ 码），不简化不截断。show_time 时在行首加 [月-日 时:分:秒]。"""
         nickname = msg.get("sender", {}).get("nickname", "未知")
         card = msg.get("sender", {}).get("card", "")
         display_name = card or nickname
@@ -162,9 +169,10 @@ class OneBotToolkit(Star):
             text = _simplify_cq_codes(raw_msg)
             if max_length != -1 and len(text) > max_length:
                 text = text[:max_length] + "…"
+        prefix = OneBotToolkit._format_ts(msg.get("time")) if show_time else ""
         if show_id:
-            return f"msg_id={msg.get('message_id')};{display_name}：{text}"
-        return f"{display_name}：{text}"
+            return f"{prefix}msg_id={msg.get('message_id')};{display_name}：{text}"
+        return f"{prefix}{display_name}：{text}"
 
     @staticmethod
     def _get_group_id(event: AiocqhttpMessageEvent) -> int | None:
@@ -215,11 +223,21 @@ class OneBotToolkit(Star):
             }, ensure_ascii=False, indent=4)
 
     @filter.llm_tool(name="get_raw_message")
-    async def get_raw_message(self, event: AiocqhttpMessageEvent) -> str:
-        """获取当前消息的原始 JSON 数据。"""
+    async def get_raw_message(self, event: AiocqhttpMessageEvent, message_id: int = 0) -> str:
+        """获取消息的原始 JSON 数据。不传 message_id 时返回当前消息。
+
+        Args:
+            message_id(number): 可选。指定消息 ID，获取该条消息的原始 JSON。默认 0 表示当前消息。
+        """
         err = self._check_permission(event)
         if err:
             return err
+        if message_id:
+            try:
+                result = await event.bot.call_action("get_msg", message_id=int(message_id))
+            except Exception as e:
+                return f"❌ 获取指定消息失败: {str(e)}"
+            return json.dumps(result, ensure_ascii=False, indent=4)
         try:
             raw = dict(event.message_obj.raw_message)
             return json.dumps(raw, ensure_ascii=False, indent=4)
@@ -347,7 +365,8 @@ class OneBotToolkit(Star):
             msg_id: int = 0,
             max_length: int = 50,
             show_message_id: bool = False,
-            show_raw_message: bool = False
+            show_raw_message: bool = False,
+            show_time: bool = False
     ) -> str:
         """获取当前群聊近 n 条消息记录，格式化为易读的对话记录。仅在群聊场景下可用。
 
@@ -358,6 +377,7 @@ class OneBotToolkit(Star):
             max_length(number): 可选。单条消息最大字符数，超出截断。默认 50，-1 不截断。
             show_message_id(boolean): 可选。是否显示 message_id。默认 false。
             show_raw_message(boolean): 可选。开启后直接输出每条消息的原始 raw_message（含完整 CQ 码信息），不再简化与截断，结果可能会非常长，请在必要时再使用。默认 false。
+            show_time(boolean): 可选。是否在每条消息前显示时间，格式 [月-日 时:分:秒]。默认 false。
         """
         err = self._check_permission(event)
         if err:
@@ -391,7 +411,7 @@ class OneBotToolkit(Star):
 
             # 取最新 count 条，再按时间正序（旧→新）输出，方便 LLM 读对话
             items = sorted(messages, key=lambda x: x.get("time", 0))[-count:]
-            lines = [self._format_message_line(msg, max_length, show_message_id, full_raw=show_raw_message) for msg in items]
+            lines = [self._format_message_line(msg, max_length, show_message_id, full_raw=show_raw_message, show_time=show_time) for msg in items]
             return "\n".join(lines)
 
         # 有锚点 / 时间范围：整页收集后再按时间取最新 count 条，禁止中途按条数早停
@@ -457,7 +477,7 @@ class OneBotToolkit(Star):
 
         # 取最新 count 条，再按时间正序（旧→新）输出
         items = sorted(collected.values(), key=lambda x: x["time"])[-count:]
-        lines = [self._format_message_line(it["raw_message"], max_length, show_message_id, full_raw=show_raw_message) for it in items]
+        lines = [self._format_message_line(it["raw_message"], max_length, show_message_id, full_raw=show_raw_message, show_time=show_time) for it in items]
         return "\n".join(lines)
 
     @filter.llm_tool(name="batch_delete_msg")
@@ -503,7 +523,8 @@ class OneBotToolkit(Star):
             user_id: int,
             minutes: int = 10,
             max_count: int = 20,
-            max_length: int = 50
+            max_length: int = 50,
+            show_time: bool = False
     ) -> str:
         """获取当前群内指定用户最近 n 分钟内的发言记录。仅在群聊场景下可用。
 
@@ -512,6 +533,7 @@ class OneBotToolkit(Star):
             minutes(number): 可选。回溯时间范围（分钟），默认 10。
             max_count(number): 可选。最大条数，默认 20，上限 100。
             max_length(number): 可选。单条消息最大字符数，超出截断。默认 50，-1 不截断。
+            show_time(boolean): 可选。是否在每条发言前显示时间，格式 [月-日 时:分:秒]。默认 false。
         """
         err = self._check_permission(event)
         if err:
@@ -598,7 +620,10 @@ class OneBotToolkit(Star):
         if not items:
             return f"ℹ️ 该用户在最近 {minutes} 分钟内没有发言记录"
 
-        lines = [f"msg_id={it['message_id']}：{it['content']}" for it in items]
+        lines = []
+        for it in items:
+            prefix = self._format_ts(it["time"]) if show_time else ""
+            lines.append(f"{prefix}msg_id={it['message_id']}：{it['content']}")
         header = f"用户 {user_id} 最近 {minutes} 分钟内的发言（共 {len(items)} 条）：\n"
         return header + "\n".join(lines)
 
