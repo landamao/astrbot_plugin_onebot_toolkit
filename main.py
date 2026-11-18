@@ -4,7 +4,14 @@ import re
 import time as _time
 from pathlib import Path
 from astrbot.api.event import filter
-from astrbot.api.all import Star, Context, AstrBotConfig, logger, ProviderRequest
+from astrbot.api.all import (
+    Star,
+    Context,
+    AstrBotConfig,
+    StarTools,
+    logger,
+    ProviderRequest,
+)
 from astrbot.core.platform.sources.aiocqhttp.aiocqhttp_message_event import AiocqhttpMessageEvent
 from astrbot.core.tools.image_generation_tools import (
     GenerateImageTool,
@@ -116,6 +123,15 @@ class OneBotToolkit(Star):
         self._ai解答系统提示词 = str(ai解答设置.get('AI解答系统提示词') or '').strip()
         self._需要指令触发 = ai解答设置.get("需要指令触发", False)
 
+        # 点赞记录：{QQ号: 日期}。启动时读入内存，点赞成功才落盘
+        try:
+            data_dir = StarTools.get_data_dir(Path(__file__).resolve().parent.name)
+            self._点赞记录文件 = data_dir / "send_like_records.json"
+        except Exception as e:
+            logger.error(f"[点赞] 数据目录准备失败，点赞记录仅保存在内存: {e}")
+            self._点赞记录文件 = None
+        self._点赞记录: dict[str, str] = self._读取点赞记录()
+
     @filter.event_message_type(filter.EventMessageType.GROUP_MESSAGE)
     async def on_group_message(self, event: AiocqhttpMessageEvent):
         """监听群消息，触发AI解答"""
@@ -199,6 +215,8 @@ class OneBotToolkit(Star):
                 limit = int(limit)
             except (ValueError, TypeError):
                 return "❌️ limit 参数的类型不正确"
+        if action == "send_like":
+            return "❌️ 请使用send_like工具进行点赞"
 
         try:
             result = await event.bot.call_action(action, **(params or {}))
@@ -321,6 +339,69 @@ class OneBotToolkit(Star):
                 "error": f"获取群成员列表失败: {str(e)}",
                 "group_id": group_id
             }, ensure_ascii=False, indent=4)
+
+    # ========== 点赞：同一用户每天限一次 ==========
+
+    def _读取点赞记录(self) -> dict[str, str]:
+        """启动时把点赞记录读进内存。文件缺失、损坏或格式不对都按空记录处理。"""
+        if self._点赞记录文件 is None or not self._点赞记录文件.exists():
+            return {}
+        try:
+            with open(self._点赞记录文件, encoding="utf-8") as f:
+                data = json.load(f)
+        except (OSError, ValueError) as e:
+            logger.warning(f"[点赞] 读取记录失败，按空记录处理: {e}")
+            return {}
+        if not isinstance(data, dict):
+            return {}
+        return {str(uid): day for uid, day in data.items() if isinstance(day, str)}
+
+    def _保存点赞记录(self, today: str) -> None:
+        """把内存记录写盘，顺手丢掉非今日的旧记录。先写临时文件再替换，避免写坏。"""
+        self._点赞记录 = {
+            uid: day for uid, day in self._点赞记录.items() if day == today
+        }
+        if self._点赞记录文件 is None:
+            return
+        tmp = self._点赞记录文件.with_name(self._点赞记录文件.name + ".tmp")
+        try:
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(self._点赞记录, f, ensure_ascii=False)
+            tmp.replace(self._点赞记录文件)
+        except OSError as e:
+            logger.error(f"[点赞] 记录写入失败: {e}")
+
+    @filter.llm_tool(name="send_like")
+    async def send_like_tool(self, event: AiocqhttpMessageEvent, user_id: int) -> str:
+        """发送QQ资料卡点赞，一次点亮 10 次。同一用户每天只能点赞一次。
+
+        Args:
+            user_id(number): 目标用户的 QQ 号。
+        """
+        err = self._check_permission(event, "send_like")
+        if err:
+            return err
+
+        try:
+            uid = str(int(user_id))
+        except (ValueError, TypeError):
+            return "点赞失败"
+
+        today = _time.strftime("%Y-%m-%d")
+        if self._点赞记录.get(uid) == today:
+            return "该用户今日已达点赞上限，禁止重复调用，用户没收到是他的号可能被风控了"
+
+        try:
+            # 点赞成功时接口返回的 data 为 None；只要不抛异常即视为成功
+            await event.bot.call_action("send_like", user_id=int(uid), times=10)
+        except Exception as e:
+            logger.warning(f"[点赞] 给 {uid} 点赞失败: {e}")
+            return "点赞失败"
+
+        self._点赞记录[uid] = today
+        self._保存点赞记录(today)
+        return "点赞成功"
+
 
     @filter.llm_tool(name="get_group_member_info")
     async def get_group_member_info(

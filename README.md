@@ -4,13 +4,14 @@
 
 ## 功能
 
-为 LLM 提供十个工具，让其能够直接调用 OneBot 协议能力；并支持平台提示词注入，在 LLM 请求前自动告知模型当前平台特性（如不支持渲染 Markdown）。
+为 LLM 提供十一个工具，让其能够直接调用 OneBot 协议能力；并支持平台提示词注入，在 LLM 请求前自动告知模型当前平台特性（如不支持渲染 Markdown）。
 
 | 工具 | 说明 |
 |------|------|
 | `call_onebot_action` | 调用任意 OneBot Action API，支持返回数量限制与白名单过滤（管理员可用） |
 | `get_raw_message` | 获取消息的原始 JSON 数据结构，可指定 message_id 获取任意消息 |
 | `send_onebot_msg` | 通过 OneBot API 发送组合/复杂消息（CQ 码字符串或消息段数组） |
+| `send_like` | 给指定 QQ 号点亮资料卡赞（每次 10 次），同一用户每天仅限一次 |
 | `get_group_member_list` | 获取当前群成员列表，可选返回数量上限（最大 20） |
 | `get_group_member_info` | 获取当前群内指定用户的信息 |
 | `get_group_msg_history` | 获取当前群聊近 n 条消息记录，格式化为易读的对话记录（支持时间范围过滤、显示时间，默认 20 条，上限 100） |
@@ -186,6 +187,20 @@ data/plugins/onebot_toolkit/
 - **参数**：
   - `message_ids` (array[string])：要撤回的消息 ID 列表，如 `["123456", "789012"]`
 - **返回**：汇总信息，包含成功/失败计数和每条消息的撤回结果
+
+### send_like
+
+给指定 QQ 号点亮资料卡赞，单次调用固定点亮 10 次（OneBot `send_like` 的上限）。
+
+- **权限**：需管理员，或在「非管理员允许的动作」中勾选「发送好友赞」；`call_onebot_action` 不再受理 `send_like`，统一走此工具
+- **参数**：
+  - `user_id` (number)：目标用户的 QQ 号
+- **每日限次**：同一 QQ 号每天只能成功点赞一次，当日再次请求直接拒绝且不会再调用接口
+- **返回**：仅以下三种
+  - `点赞成功`：接口未抛异常即视为成功，并写入当日记录
+  - `点赞失败`：接口调用异常，不计入当日次数，可重试
+  - `今日已达点赞上限`：该 QQ 号今天已点过
+- **记录文件**：`data/plugin_data/astrbot_plugin_onebot_toolkit/send_like_records.json`，结构为 `{QQ号: 日期}`，插件启动时读入内存，点赞成功才写盘；写盘时清理非当日记录，采用「临时文件 + 替换」避免写坏
 
 ### get_user_recent_msgs
 
